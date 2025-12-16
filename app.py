@@ -7,332 +7,375 @@ import os
 from datetime import datetime
 
 # ==============================================================================
-# 1. MOTORE FISICO & VALIDATORI (Il cervello)
+# 1. MOTORE FISICO & MATEMATICO
 # ==============================================================================
 class PhysicsEngine:
     
     @staticmethod
-    def validate_stack(stack_df, d_port, r_port):
-        """Controlla errori comuni nell'assemblaggio lamelle"""
-        if stack_df is None or stack_df.empty:
-            return [], [] # Nessun dato, nessun errore
-            
-        errors = []
-        warnings = []
-        
-        # 1. Controllo Copertura Porta (Face Shim)
-        try:
-            first_shim = stack_df.iloc[0]
-            # La prima lamella deve essere più grande della porta + tenuta
-            min_required = (r_port * 2) + 2.0 
-            if first_shim['OD'] < min_required:
-                errors.append(f"⛔ ERRORE: La prima lamella ({first_shim['OD']}mm) è troppo piccola! La porta è larga e serve almeno {min_required:.1f}mm.")
-        except:
-            pass
-
-        # 2. Controllo Piramide Invertita (Lamella grande sopra piccola)
-        try:
-            prev_od = stack_df.iloc[0]['OD']
-            for i, row in stack_df.iloc[1:].iterrows():
-                curr_od = row['OD']
-                if curr_od > prev_od + 2.0: # Tolleranza per ring/crossover
-                    warnings.append(f"⚠️ AVVISO: Lamella #{i+1} ({curr_od}mm) è più grande di quella sotto ({prev_od}mm). Verifica se è corretto.")
-                prev_od = curr_od
-        except:
-            pass
-            
-        return errors, warnings
+    def calc_spring_rate(d_wire, d_out, n_coils, material="steel"):
+        """Calcola K molla (N/mm) - Formula standard"""
+        if n_coils <= 0 or d_wire <= 0: return 0.0
+        d_mean = d_out - d_wire
+        G = 81500 if material == "steel" else 45000 # Modulo a taglio (N/mm2)
+        k = (G * (d_wire**4)) / (8 * (d_mean**3) * n_coils)
+        return k # N/mm
 
     @staticmethod
-    def calc_areas(inputs):
-        """Calcola le aree di passaggio per avvisi di strozzatura"""
-        # Area Faccia (Curtain Area approx)
-        perimeter = 2 * np.pi * inputs.get('r_port', 12)
-        area_face = perimeter * inputs.get('d_port', 14) * 0.5 # Stima apertura media
+    def calc_gas_progression(p0, v0_res, rod_dia, stroke_max, steps=50):
+        """Calcola la curva di pressione gas adiabatica/isotermica"""
+        rod_area = np.pi * (rod_dia/2)**2
+        x = np.linspace(0, stroke_max, steps)
+        # Volume occupato dallo stelo
+        v_rod = rod_area * x 
+        # Legge gas: P1 * V1 = P2 * V2 (Isotermica per semplicità, o adiabatica con gamma)
+        # V_current = V0_res - V_rod
+        # P_current = P0 * V0 / (V0 - V_rod)
         
-        # Area Gola (Throat - Restrizione Interna)
-        n_thrt = inputs.get('n_thrt', 3)
-        d_thrt = inputs.get('d_thrt', 9)
-        area_thrt = n_thrt * np.pi * (d_thrt / 2)**2
+        # Protezione divisione per zero
+        denom = v0_res - v_rod
+        denom[denom <= 0] = 0.001
         
-        return area_face, area_thrt
+        p_curve = (p0 * v0_res) / denom
+        return x, p_curve
+
+    @staticmethod
+    def calc_shim_stiffness(stack, d_clamp, h_preload):
+        """
+        Stima la rigidezza del pacco (f.stack) usando teoria delle piastre.
+        Ritorna un coefficiente K_stack simbolico per la simulazione.
+        """
+        if not stack or len(stack) == 0: return 0.1
+        
+        k_total = 0
+        for item in stack:
+            od = item.get('OD', 0)
+            thk = item.get('Thk', 0)
+            qty = item.get('Qty', 1)
+            
+            if od > d_clamp:
+                # Formula semplificata Roark per piastre anulari: K ~ t^3 / (a^2)
+                # Più è grande OD rispetto a Clamp, più è morbida.
+                arm = (od - d_clamp) / 2
+                k_shim = (thk**3) / (arm**2) * 1000000 # Scaling factor
+                k_total += k_shim * qty
+        
+        # Aggiunta effetto precarico (h.preload)
+        # Il precarico agisce come una soglia di forza iniziale
+        return k_total
+
+    @staticmethod
+    def validate_stack(stack_df, d_port, r_port, d_clamp):
+        """Validatore errori assemblaggio"""
+        if stack_df is None or stack_df.empty: return [], []
+        errors, warnings = [], []
+        
+        try:
+            first = stack_df.iloc[0]
+            # 1. Face Shim troppo piccola
+            min_req = (r_port * 2) + 1.0
+            if first['OD'] < min_req:
+                errors.append(f"⛔ ERRORE: La prima lamella ({first['OD']}mm) non copre la porta! Serve > {min_req:.1f}mm.")
+            
+            # 2. Clamp Check
+            last = stack_df.iloc[-1]
+            if last['OD'] < d_clamp:
+                warnings.append(f"⚠️ Clamp Warning: L'ultima lamella ({last['OD']}) è più piccola del pivot ({d_clamp}).")
+        except:
+            pass
+        return errors, warnings
 
 # ==============================================================================
-# 2. GESTIONE DATABASE (Salvataggio)
+# 2. GESTIONE DATABASE
 # ==============================================================================
 class SuspensionDB:
-    def __init__(self, db_file="suspension_master_db.json"):
-        self.db_file = db_file
-        self.load()
-
-    def load(self):
-        if os.path.exists(self.db_file):
-            with open(self.db_file, 'r') as f:
-                self.data = json.load(f)
-        else:
-            self.data = {}
-
-    def save(self, meta, inputs):
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        setup_id = f"{meta['bike']} - {meta['track']} ({date_str})"
-        self.data[setup_id] = {"meta": meta, "inputs": inputs}
-        with open(self.db_file, 'w') as f:
-            json.dump(self.data, f, indent=4)
-        return setup_id
-
-    def get_list(self, filter_type=None):
-        if filter_type:
-            return [k for k,v in self.data.items() if v['meta']['type'] == filter_type]
-        return list(self.data.keys())
-
-    def get(self, setup_id):
-        return self.data.get(setup_id)
-
-db = SuspensionDB()
-
-# ==============================================================================
-# 3. INTERFACCIA UTENTE (UI)
-# ==============================================================================
-st.set_page_config(page_title="Suspension Lab MASTER", layout="wide", page_icon="🔧")
-
-# CSS per compattare
-st.markdown("""<style>.stTabs [data-baseweb="tab-list"] { gap: 8px; }</style>""", unsafe_allow_html=True)
-
-# --- SIDEBAR: GESTIONE ---
-with st.sidebar:
-    st.title("🗂️ Archivio")
-    mode = st.radio("Azione:", ["📝 Nuovo / Modifica", "📊 Confronta Storico"])
+    FILE = "suspension_master_v5.json"
     
-    if mode == "📝 Nuovo / Modifica":
-        st.markdown("---")
-        st.subheader("Carica Setup")
-        history = db.get_list()
-        load_sel = st.selectbox("Seleziona:", ["-- Vuoto --"] + history)
-        if st.button("📥 Carica"):
-            st.session_state['active_setup'] = db.get(load_sel) if load_sel != "-- Vuoto --" else {}
-            st.rerun()
+    @classmethod
+    def load(cls):
+        if os.path.exists(cls.FILE):
+            with open(cls.FILE, 'r') as f: return json.load(f)
+        return {}
 
-# Recupera dati sessione
-act_rec = st.session_state.get('active_setup', {})
-meta = act_rec.get('meta', {})
-data = act_rec.get('inputs', {})
+    @classmethod
+    def save(cls, meta, data):
+        db = cls.load()
+        key = f"{meta['bike']} - {meta['track']} ({datetime.now().strftime('%Y-%m-%d')})"
+        db[key] = {"meta": meta, "data": data}
+        with open(cls.FILE, 'w') as f: json.dump(db, f, indent=4)
+        return key
 
 # ==============================================================================
-# FUNZIONE GENERATORE VALVOLE (Questa contiene TUTTI i tuoi campi)
+# 3. UI COMPONENTS
 # ==============================================================================
-def render_valve_detailed(label, key, has_hsc=False, is_mid=False):
-    """Genera la scheda completa per una singola valvola"""
-    st.markdown(f"#### 🔩 {label}")
+st.set_page_config(page_title="Suspension Lab MASTER", layout="wide", page_icon="⚙️")
+
+def render_stack_editor(key, d_clamp_default):
+    """Editor Lamelle con Turbo Input e Taper Builder"""
+    st.markdown("**🥞 Shim Stack Editor**")
     
-    t_geo, t_stack = st.tabs(["📐 Geometria & Port", "🥞 Shim Stack"])
+    # --- TOOLBAR ---
+    mode = st.radio("Metodo Input", ["Tabella", "Incolla Testo", "Generatore Piramide"], horizontal=True, key=f"{key}_mode")
     
-    # --- TAB GEOMETRIA (Tutti i campi che volevi) ---
-    with t_geo:
+    df_out = pd.DataFrame()
+    
+    if mode == "Tabella":
+        default_data = [{"Qty":1, "OD":30.0, "ID":d_clamp_default, "Thk":0.20}]
+        val = st.session_state.get(f"{key}_stack", default_data)
+        df_out = st.data_editor(val, num_rows="dynamic", key=f"{key}_editor", use_container_width=True)
+    
+    elif mode == "Incolla Testo":
+        txt = st.text_area("Incolla formato: Qty x OD x Thk (es: 3 x 30 x 0.15)", height=100, key=f"{key}_txt")
+        if st.button("📥 Importa", key=f"{key}_btn_imp"):
+            rows = []
+            for line in txt.split('\n'):
+                parts = line.lower().replace('x', ' ').split()
+                if len(parts) >= 3:
+                    try:
+                        rows.append({"Qty":float(parts[0]), "OD":float(parts[1]), "ID":d_clamp_default, "Thk":float(parts[2])})
+                    except: pass
+            if rows:
+                st.session_state[f"{key}_stack"] = rows
+                st.success("Importato! Torna a 'Tabella' per vedere.")
+                
+    elif mode == "Generatore Piramide":
+        c1, c2, c3, c4 = st.columns(4)
+        od_start = c1.number_input("OD Start", 30.0, key=f"{key}_ods")
+        od_end = c2.number_input("OD End", 18.0, key=f"{key}_ode")
+        step = c3.number_input("Step (mm)", 2.0, key=f"{key}_stp")
+        thk = c4.number_input("Thk", 0.15, key=f"{key}_thk")
+        if st.button("🏗️ Genera", key=f"{key}_btn_bld"):
+            rows = []
+            curr = od_start
+            while curr >= od_end:
+                rows.append({"Qty":1, "OD":curr, "ID":d_clamp_default, "Thk":thk})
+                curr -= step
+            st.session_state[f"{key}_stack"] = rows
+            st.success("Generato! Torna a 'Tabella'.")
+
+    # Salva sempre lo stato per l'uso globale
+    if mode == "Tabella":
+        st.session_state[f"{key}_stack"] = df_out.to_dict('records')
+    
+    return st.session_state.get(f"{key}_stack", [])
+
+def render_valve_detailed(label, key, has_hsc=False):
+    """Scheda completa Valvola"""
+    st.markdown(f"### 🔧 {label}")
+    t1, t2, t3 = st.tabs(["📐 Geometria & Clamp", "🥞 Stack & Turbo Input", "🧮 Molla HSC/ICS"])
+    
+    # 1. GEOMETRIA
+    with t1:
         c1, c2, c3 = st.columns(3)
-        
-        # COL 1: Faccia Pistone
         with c1:
-            st.caption("Faccia Pistone")
-            r_port = st.number_input(f"r.port (Raggio)", value=data.get(f'{key}_r', 12.0), key=f'{key}_r')
-            d_port = st.number_input(f"d.port (Largh. Porta)", value=data.get(f'{key}_d', 14.0), key=f'{key}_d')
-            w_seat = st.number_input(f"w.seat (Largh. Sede)", value=data.get(f'{key}_w', 1.5), key=f'{key}_w', help="Larghezza della battuta di tenuta")
-            h_deck = st.number_input(f"h.deck (Dish/Precarico)", value=data.get(f'{key}_h', 0.0), step=0.05, key=f'{key}_h', help="Concavità pistone")
-
-        # COL 2: Interno (Throat) & Leak
+            st.caption("Pistone")
+            r_port = st.number_input("r.port (Raggio)", 12.0, key=f"{key}_r")
+            d_port = st.number_input("d.port (Largh. Porta)", 14.0, key=f"{key}_d")
+            w_port = st.number_input("w.port (Lung. Arco)", 10.0, key=f"{key}_wp", help="Lunghezza dell'arco della porta")
         with c2:
-            st.caption("Interno & Leak")
-            d_thrt = st.number_input(f"d.thrt (Gola)", value=data.get(f'{key}_dt', 9.0), key=f'{key}_dt')
-            n_thrt = st.number_input(f"n.thrt (N. Fori)", value=data.get(f'{key}_nt', 3), key=f'{key}_nt')
-            d_leak = st.number_input(f"d.leak (Bleed Fisso)", value=data.get(f'{key}_dl', 0.0), key=f'{key}_dl')
-            
-            # Verifica Strozzatura Live
-            a_face, a_thrt = PhysicsEngine.calc_areas({
-                'r_port':r_port, 'd_port':d_port, 'd_thrt':d_thrt, 'n_thrt':n_thrt
-            })
-            if a_thrt < a_face * 0.9:
-                st.warning(f"⚠️ Strozzatura Interna: Gola ({a_thrt:.1f}) < Faccia ({a_face:.1f})")
-
-        # COL 3: Registri & HSC
+            st.caption("Profilo & Sede")
+            w_seat = st.number_input("w.seat (Tenuta)", 1.5, key=f"{key}_ws")
+            h_deck = st.number_input("h.deck (Flusso In)", 0.0, key=f"{key}_hd", help="Altezza libera ingresso flusso (non precarico)")
+            d_thrt = st.number_input("d.thrt (Gola)", 9.0, key=f"{key}_dt")
         with c3:
-            st.caption("Registri")
-            st.number_input(f"d.bleed (Spillo)", value=data.get(f'{key}_bl', 0.0), key=f'{key}_bl')
-            clicks = st.slider(f"Clicker", 0, 30, data.get(f'{key}_clk', 12), key=f'{key}_clk')
-            
-            if has_hsc:
-                st.error("🔴 HSC Setup")
-                st.selectbox("Tipo HSC", ["Molla", "Stack"], key=f'{key}_hsct')
-                st.number_input("Precarico HSC", value=data.get(f'{key}_hscp', 0.0), step=0.1, key=f'{key}_hscp')
+            st.caption("Meccanica")
+            d_clamp = st.number_input("d.clamp (Pivot)", 12.0, key=f"{key}_dc")
+            h_preload = st.number_input("h.preload (Dish)", 0.0, step=0.05, key=f"{key}_hp", help="Precarico meccanico sulla faccia")
+            clicks = st.slider("Clicker", 0, 30, 12, key=f"{key}_clk")
 
-    # --- TAB STACK (Editor + Validatore) ---
-    with t_stack:
-        col_ed, col_val = st.columns([3, 1])
-        
-        with col_ed:
-            # Recupera lo stack salvato o usa default
-            saved_stack = data.get(f'{key}_stack')
-            if saved_stack:
-                df_start = pd.DataFrame(saved_stack)
-            else:
-                df_start = pd.DataFrame([{"Qty":1, "OD":30.0, "Thk":0.20}, {"Qty":1, "OD":28.0, "Thk":0.20}])
-                
-            edited_df = st.data_editor(df_start, num_rows="dynamic", use_container_width=True, key=f'{key}_df')
-            
-            if is_mid:
-                st.number_input("Float / Gioco (mm)", value=data.get(f'{key}_float', 0.3), step=0.05, key=f'{key}_float')
+        # Geometry Wizard per d.thrt
+        with st.expander("📐 Wizard Geometria (Calcolo Area)"):
+            shape = st.selectbox("Forma Porta", ["Circolare", "Fagiolo/Arco"], key=f"{key}_shp")
+            if shape == "Fagiolo/Arco":
+                area_calc = w_port * d_port # Approx
+                equiv_d = np.sqrt(area_calc/np.pi)*2
+                st.info(f"Area ≈ {area_calc:.1f} mm² -> d.thrt equiv ≈ {equiv_d:.1f} mm")
 
-        with col_val:
-            # Esegue il validatore in tempo reale
-            errs, warns = PhysicsEngine.validate_stack(edited_df, d_port, r_port)
-            if errs: 
-                for e in errs: st.error(e)
-            elif warns:
-                for w in warns: st.warning(w)
-            else:
-                st.success("✅ Stack OK")
-                
+    # 2. STACK
+    with t2:
+        stack_data = render_stack_editor(key, d_clamp)
+        # Validatore Live
+        errs, warns = PhysicsEngine.validate_stack(pd.DataFrame(stack_data), d_port, r_port, d_clamp)
+        for e in errs: st.error(e)
+        for w in warns: st.warning(w)
+
+    # 3. MOLLA (Opzionale)
+    rate_val = 0.0
+    with t3:
+        if has_hsc:
+            st.markdown("**Calcolatore Molla HSC**")
+            mc1, mc2, mc3 = st.columns(3)
+            dw = mc1.number_input("Filo (mm)", 3.0, key=f"{key}_sw")
+            dout = mc2.number_input("Esterno (mm)", 18.0, key=f"{key}_sod")
+            nc = mc3.number_input("Spire", 6.0, key=f"{key}_sn")
+            
+            calc_k = PhysicsEngine.calc_spring_rate(dw, dout, nc)
+            st.metric("Rate Calcolato", f"{calc_k:.1f} N/mm")
+            
+            use_spring = st.checkbox("Usa questa molla nel calcolo", value=True, key=f"{key}_use_s")
+            if use_spring: rate_val = calc_k
+        else:
+            st.info("Questa valvola non usa molle HSC solitamente.")
+
     return {
-        "stack": edited_df.to_dict('records'),
-        "r_port": r_port, "d_port": d_port, "w_seat": w_seat, "h_deck": h_deck,
-        "d_thrt": d_thrt, "n_thrt": n_thrt, "d_leak": d_leak, 
-        "clicks": clicks
+        "stack": stack_data, "geo": {
+            "r_port":r_port, "d_port":d_port, "w_port":w_port, 
+            "w_seat":w_seat, "h_deck":h_deck, "d_thrt":d_thrt, 
+            "d_clamp":d_clamp, "h_preload":h_preload, "clicks":clicks
+        },
+        "spring_rate": rate_val
     }
 
+# ==============================================================================
+# 4. MAIN PAGE
+# ==============================================================================
+st.title("🛠️ Suspension Lab MASTER V5")
+
+# --- HEADER GLOBALE ---
+with st.container():
+    c1, c2, c3, c4 = st.columns(4)
+    comp_type = c1.selectbox("Componente", ["MONO (Shock)", "FORCELLA (Fork)"])
+    d_rod = c2.number_input("Ø Stelo (Rod)", 16.0)
+    d_piston = c3.number_input("Ø Pistone (Main)", 50.0)
+    p_gas_static = c4.number_input("Pressione Gas (Bar)", 10.0)
+
+# --- CONFIGURAZIONE GAS AVANZATA (Solo Mono) ---
+gas_curve = None
+if comp_type == "MONO (Shock)":
+    with st.expander("🎈 Configurazione Bladder / Reservoir (Avanzata)"):
+        gc1, gc2, gc3 = st.columns(3)
+        res_diam = gc1.number_input("Ø Serbatoio", 40.0)
+        res_len = gc2.number_input("Altezza Gas (mm)", 80.0)
+        stroke = gc3.number_input("Corsa Mono (mm)", 60.0)
+        
+        if st.checkbox("Attiva simulazione compressione gas"):
+            v0 = np.pi * (res_diam/2)**2 * res_len
+            x_axis, p_curve = PhysicsEngine.calc_gas_progression(p_gas_static, v0, d_rod, stroke)
+            gas_curve = (x_axis, p_curve)
+            st.caption(f"Pressione fine corsa: {p_curve[-1]:.1f} Bar")
+
+# --- TAB SETUP VALVOLE ---
+inputs = {}
+st.markdown("---")
+
+if comp_type == "MONO (Shock)":
+    tab1, tab2, tab3 = st.tabs(["🎛️ BVC (Adjuster+HSC)", "🔵 MVC (Comp)", "🔴 MVR (Reb)"])
+    with tab1: inputs['bvc'] = render_valve_detailed("Adjuster / BVC", "bvc", has_hsc=True)
+    with tab2: inputs['mvc'] = render_valve_detailed("Main Piston Comp", "mvc", has_hsc=False)
+    with tab3: inputs['mvr'] = render_valve_detailed("Main Piston Reb", "mvr", has_hsc=False)
+else:
+    tab1, tab2, tab3 = st.tabs(["🟦 BVC (Base)", "🔵 MVC (Mid Comp)", "🔴 MVR (Mid Reb)"])
+    with tab1: inputs['bvc'] = render_valve_detailed("Base Valve", "bvc", has_hsc=False)
+    with tab2: inputs['mvc'] = render_valve_detailed("Mid Valve Comp", "mvc", has_hsc=False)
+    with tab3: inputs['mvr'] = render_valve_detailed("Mid Valve Reb", "mvr", has_hsc=False)
 
 # ==============================================================================
-# MAIN PAGE LOGIC
+# 5. SIMULAZIONE & DASHBOARD
 # ==============================================================================
-
-if mode == "📝 Nuovo / Modifica":
-    st.title("🛠️ Suspension Lab Master")
+st.markdown("---")
+if st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True):
     
-    # 1. HEADER GENERALE
-    c_gen1, c_gen2, c_gen3, c_gen4 = st.columns(4)
-    comp_type = c_gen1.selectbox("Tipo Componente", ["FORCELLA (Fork)", "MONO (Shock)"], index=0 if meta.get('type')!="Shock" else 1)
-    d_rod = c_gen2.number_input("Ø Stelo (Rod)", value=data.get('d_rod', 16.0))
-    d_pist = c_gen3.number_input("Ø Pistone (Valve)", value=data.get('d_pist', 50.0))
-    p_gas = c_gen4.number_input("Pressione Gas (Bar)", value=data.get('p_gas', 10.0))
+    # --- SIMULATORE SEMPLIFICATO PER ESEMPIO ---
+    # In un caso reale, qui useresti le equazioni di Bernoulli + Flessione
+    v = np.linspace(0, 4.0, 50)
     
-    # Input Cliente
-    c_cli1, c_cli2 = st.columns(2)
-    bike = c_cli1.text_input("Moto", value=meta.get('bike', ''))
-    track = c_cli2.text_input("Pista/Cliente", value=meta.get('track', ''))
+    # Calcolo Rigidezze Stack
+    k_bvc = PhysicsEngine.calc_shim_stiffness(inputs['bvc']['stack'], inputs['bvc']['geo']['d_clamp'], inputs['bvc']['geo']['h_preload'])
+    k_mvc = PhysicsEngine.calc_shim_stiffness(inputs['mvc']['stack'], inputs['mvc']['geo']['d_clamp'], inputs['mvc']['geo']['h_preload'])
+    k_mvr = PhysicsEngine.calc_shim_stiffness(inputs['mvr']['stack'], inputs['mvr']['geo']['d_clamp'], inputs['mvr']['geo']['h_preload'])
+    
+    # Aggiunta Molle
+    k_bvc += inputs['bvc']['spring_rate'] * 10 # Peso molla HSC
+    
+    # Calcolo Forze (F = k * v^Factor) - Modello Ibrido
+    f_comp = (v * k_bvc) + (v * k_mvc * 0.8) 
+    f_reb = -1 * (v * k_mvr) # Negativo
+    
+    # Calcolo Pressioni (Cavitazione)
+    # P_base = P_gas + Drop_BVC
+    # Se abbiamo la curva gas reale, usiamo quella (media), altrimenti statica
+    p_gas_ref = np.mean(gas_curve[1]) if gas_curve else p_gas_static
+    p_base = p_gas_ref + (f_comp * 0.1) # Semplificazione pressione a monte
+    p_mid = p_base - (v * k_mvc * 0.05) # Caduta sulla mid
 
-    st.markdown("---")
-
-    # 2. CONFIGURAZIONE VALVOLE (Dinamica)
-    inputs_collected = {} # Qui raccogliamo tutto per il salvataggio
-
-    if "Fork" in comp_type:
-        # Struttura Forcella: BVc + MVc + MVr
-        tab_bv, tab_mv_c, tab_mv_r = st.tabs(["🟦 BASE VALVE (Comp)", "🟧 MID VALVE (Comp)", "🟨 MID VALVE (Reb)"])
+    # --- DASHBOARD GRAFICI ---
+    
+    # TAB 1: DYNO PLOT
+    t_g1, t_g2, t_g3, t_g4 = st.tabs(["📈 Dyno Plot", "⚠️ Cavitazione", "📐 X-Ray Stack", "🤖 AI Analysis"])
+    
+    with t_g1:
+        fig_dyno = go.Figure()
+        fig_dyno.add_trace(go.Scatter(x=v, y=f_comp, name='Compressione', line=dict(color='blue', width=3)))
+        fig_dyno.add_trace(go.Scatter(x=v, y=f_reb, name='Ritorno', line=dict(color='red', width=3)))
+        fig_dyno.add_hline(y=0, line_color="gray")
+        fig_dyno.update_layout(title="Force vs Velocity", xaxis_title="Velocità (m/s)", yaxis_title="Forza (kg)")
+        st.plotly_chart(fig_dyno, use_container_width=True)
         
-        with tab_bv: 
-            inputs_collected['bvc'] = render_valve_detailed("Base Valve Comp", "bvc", has_hsc=False)
-        with tab_mv_c: 
-            inputs_collected['mvc'] = render_valve_detailed("Mid Valve Comp", "mvc", has_hsc=False, is_mid=True)
-        with tab_mv_r: 
-            inputs_collected['mvr'] = render_valve_detailed("Mid Valve Reb", "mvr", has_hsc=False)
-            
-    else: # SHOCK
-        # Struttura Mono: Adjuster (HSC) + Main (Comp/Reb)
-        tab_adj, tab_main_c, tab_main_r = st.tabs(["🎛️ ADJUSTER (BVC+HSC)", "🟧 MAIN PISTON (Comp)", "🟨 MAIN PISTON (Reb)"])
+    with t_g2:
+        fig_cav = go.Figure()
+        fig_cav.add_trace(go.Scatter(x=v, y=p_base, name='Pressione Base (Gas+BVC)', line=dict(color='green')))
+        fig_cav.add_trace(go.Scatter(x=v, y=p_mid, name='Pressione Mid (Dietro Pistone)', line=dict(color='blue')))
+        fig_cav.add_hline(y=0, line_color='red', line_dash='dash', annotation_text="CAVITAZIONE")
         
-        with tab_adj:
-            inputs_collected['bvc'] = render_valve_detailed("Adjuster / BVC", "bvc", has_hsc=True)
-        with tab_main_c:
-            inputs_collected['mvc'] = render_valve_detailed("Main Piston Comp", "mvc", has_hsc=False, is_mid=True)
-        with tab_main_r:
-            inputs_collected['mvr'] = render_valve_detailed("Main Piston Reb", "mvr", has_hsc=False)
+        # Se c'è la curva gas progressiva, mostriamola
+        if gas_curve:
+             fig_cav.add_trace(go.Scatter(x=v, y=[gas_curve[1][0]]*len(v), name='Gas Inizio', line=dict(dash='dot', color='gray')))
+             fig_cav.add_trace(go.Scatter(x=v, y=[gas_curve[1][-1]]*len(v), name='Gas Fine Corsa', line=dict(dash='dot', color='black')))
+             
+        st.plotly_chart(fig_cav, use_container_width=True)
 
-    st.markdown("---")
+    with t_g3:
+        st.info("Visualizzazione Deformazione Lamelle (Cross Section)")
+        sel_v = st.slider("Velocità Simulazione (m/s)", 0.0, 4.0, 1.0)
+        
+        # Simulazione grafica deformazione
+        # Creiamo una linea che rappresenta la lamella a riposo (y=0) e una deformata
+        idx = int((sel_v / 4.0) * 49)
+        force_now = f_comp[idx]
+        deflection = force_now / 1000.0 # mm fittizi
+        
+        fig_xray = go.Figure()
+        
+        # Pistone
+        fig_xray.add_shape(type="rect", x0=0, y0=-2, x1=20, y1=0, fillcolor="gray", line_color="black")
+        # Clamp
+        fig_xray.add_shape(type="rect", x0=0, y0=0, x1=inputs['mvc']['geo']['d_clamp']/2, y1=0.5, fillcolor="gold")
+        
+        # Lamella (Curva di Bezier approssimata)
+        x_shim = np.linspace(inputs['mvc']['geo']['d_clamp']/2, 15, 20)
+        # La deflessione aumenta col raggio
+        y_shim = (x_shim - inputs['mvc']['geo']['d_clamp']/2)**2 * deflection * 0.5
+        
+        fig_xray.add_trace(go.Scatter(x=x_shim, y=y_shim, mode='lines', fill='tozeroy', name=f'Deflessione @ {sel_v}m/s'))
+        fig_xray.update_layout(yaxis_range=[-1, 2], title=f"Apertura Stimata: {y_shim[-1]:.2f} mm")
+        st.plotly_chart(fig_xray, use_container_width=True)
 
-    # 3. AZIONI & SIMULAZIONE
-    col_act1, col_act2 = st.columns([1, 3])
-    
-    with col_act1:
-        st.write("### 🏁 Azioni")
-        if st.button("💾 SALVA PROGETTO", type="primary", use_container_width=True):
-            if bike:
-                final_inputs = {**inputs_collected, "d_rod":d_rod, "d_pist":d_pist, "p_gas":p_gas}
-                final_meta = {"bike": bike, "track": track, "type": "Fork" if "Fork" in comp_type else "Shock"}
-                db.save(final_meta, final_inputs)
-                st.success("✅ Salvato nel Database!")
-            else:
-                st.error("Inserisci almeno il nome della Moto.")
+    with t_g4:
+        st.subheader("🤖 AI Data Analyst")
+        st.caption("Invia i dati numerici della curva all'Intelligenza Artificiale per un parere tecnico.")
+        
+        data_packet = {
+            "max_force_comp": f"{max(f_comp):.1f} kg",
+            "min_pressure": f"{min(p_mid):.1f} bar",
+            "cavitation_risk": "YES" if min(p_mid) < 0 else "NO",
+            "balance": f"Comp/Reb Ratio at 1m/s: {abs(f_comp[12]/f_reb[12]):.2f}"
+        }
+        st.json(data_packet)
+        
+        if st.button("🧠 Genera Report AI (Simulato)"):
+            st.success("Analisi completata!")
+            st.markdown("""
+            > **Report Tecnico:**
+            > La curva di compressione mostra una buona progressione iniziale, ma il **precarico HSC sembra eccessivo** (vedi ginocchio a 1.5 m/s). 
+            > Il rischio di cavitazione è **ASSENTE** grazie alla pressione gas ben dimensionata.
+            > **Consiglio:** Prova a ridurre il `h.preload` sulla BVC di 0.1mm per migliorare la sensibilità sulle piccole asperità.
+            """)
 
-        # Bottone per calcolare (simulazione)
-        calc_clicked = st.button("🚀 CALCOLA TARATURA", use_container_width=True)
-
-    with col_act2:
-        # 4. RISULTATI SIMULAZIONE
-        if calc_clicked:
-            st.subheader("📊 Analisi Risultati")
-            
-            # Simulazione Dati (Placeholder basato su input reali)
-            v = np.linspace(0, 4, 50)
-            
-            # Recuperiamo rigidità (simbolica) dagli stack inseriti per rendere il grafico vivo
-            k_base = len(inputs_collected['bvc']['stack']) * 5
-            k_mid = len(inputs_collected['mvc']['stack']) * 5
-            
-            # Forze Totali
-            f_tot = v * (k_base + k_mid)
-            f_click_min = f_tot * 1.2 # Tutto chiuso
-            f_click_max = f_tot * 0.8 # Tutto aperto
-            
-            # Pressioni (Logica Cavitazione Semplificata per display)
-            # Pressione Base = P_gas + resistenza BVC
-            p_base = p_gas + (v * k_base / 10) 
-            # Depressione Mid = P_base - caduta MVC
-            p_mid_cham = p_base - (v * k_mid / 15)
-
-            # --- GRAFICO 1: Clicker Map ---
-            fig1 = go.Figure()
-            # Area Grigia Range
-            fig1.add_trace(go.Scatter(
-                x=np.concatenate([v, v[::-1]]),
-                y=np.concatenate([f_click_max, f_click_min[::-1]]),
-                fill='toself', fillcolor='rgba(180,180,180,0.3)', 
-                line=dict(color='rgba(255,255,255,0)'), name='Range Regolazioni'
-            ))
-            fig1.add_trace(go.Scatter(x=v, y=f_tot, line=dict(color='red', width=3), name='Attuale'))
-            
-            # Zone Velocità
-            
-            fig1.add_vrect(x0=0, x1=0.3, fillcolor="green", opacity=0.1, annotation_text="Low Speed")
-            
-            st.plotly_chart(fig1, use_container_width=True)
-            
-            # --- GRAFICO 2: Pressioni (Cavitazione) ---
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=v, y=p_base, name='Pressione Base (BV)', line=dict(color='green')))
-            fig2.add_trace(go.Scatter(x=v, y=p_mid_cham, name='Pressione Mid (Reb Chamber)', line=dict(color='blue')))
-            fig2.add_hline(y=0, line_color="red", line_dash="dash", annotation_text="CAVITAZIONE")
-            
-            if np.min(p_mid_cham) < 0:
-                st.error("⚠️ ALLARME: Rischio Cavitazione! (Linea blu sotto zero)")
-            else:
-                st.success("✅ Pressioni Sicure")
-                
-            st.plotly_chart(fig2, use_container_width=True)
-
-            # --- 5. WEIGHT SCALING (Appare solo ORA) ---
-            st.divider()
-            st.write("### ⚖️ Adattamento Peso (Post-Process)")
-            cw1, cw2 = st.columns(2)
-            w_start = cw1.number_input("Peso Attuale", 75.0)
-            w_target = cw2.number_input("Peso Target", 85.0)
-            
-            if w_target != w_start:
-                factor = w_target / w_start
-                st.info(f"Per il nuovo peso serve il **{(factor-1)*100:+.1f}%** di forza in più.")
-                # Proietta la curva target sul grafico (simulazione mentale)
-                st.caption("Usa questa percentuale per indurire gli stack sopra.")
-
-elif mode == "📊 Confronta Storico":
-    st.header("Confronto Tarature")
-    # Codice confronto (semplificato per brevità, usa db.get_list)
-    opts = db.get_list()
-    sels = st.multiselect("Scegli setup:", opts)
-    if sels:
-        st.write("Funzione confronto attiva...")
+# --- SIDEBAR SAVE/LOAD ---
+with st.sidebar:
+    st.header("🗂️ Progetto")
+    bike = st.text_input("Moto / Modello")
+    track = st.text_input("Cliente / Pista")
+    if st.button("Salva"):
+        if bike:
+            SuspensionDB.save({"bike":bike, "track":track, "type":comp_type}, inputs)
+            st.success("Salvato!")
