@@ -176,23 +176,24 @@ def render_valve_detailed(label, key, has_hsc=False):
     st.markdown(f"### 🔧 {label}")
     t1, t2, t3 = st.tabs(["📐 Geometria & Clamp", "🥞 Stack & Turbo Input", "🧮 Molla HSC/ICS"])
     
-    # 1. GEOMETRIA
+   # 1. GEOMETRIA
     with t1:
         c1, c2, c3 = st.columns(3)
         with c1:
             st.caption("Pistone")
-            r_port = st.number_input("r.port (Raggio)", 12.0, key=f"{key}_r")
-            d_port = st.number_input("d.port (Largh. Porta)", 14.0, key=f"{key}_d")
-            w_port = st.number_input("w.port (Lung. Arco)", 10.0, key=f"{key}_wp", help="Lunghezza dell'arco della porta")
+            # AGGIUNTO min_value=0.0 OVUNQUE
+            r_port = st.number_input("r.port (Raggio)", value=12.0, min_value=0.0, step=0.1, key=f"{key}_r")
+            d_port = st.number_input("d.port (Largh. Porta)", value=14.0, min_value=0.0, step=0.1, key=f"{key}_d")
+            w_port = st.number_input("w.port (Lung. Arco)", value=10.0, min_value=0.0, step=0.1, key=f"{key}_wp", help="Lunghezza dell'arco della porta")
         with c2:
             st.caption("Profilo & Sede")
-            w_seat = st.number_input("w.seat (Tenuta)", 1.5, key=f"{key}_ws")
-            h_deck = st.number_input("h.deck (Flusso In)", 0.0, key=f"{key}_hd", help="Altezza libera ingresso flusso (non precarico)")
-            d_thrt = st.number_input("d.thrt (Gola)", 9.0, key=f"{key}_dt")
+            w_seat = st.number_input("w.seat (Tenuta)", value=1.5, min_value=0.0, step=0.1, key=f"{key}_ws")
+            h_deck = st.number_input("h.deck (Flusso In)", value=0.0, min_value=0.0, step=0.05, key=f"{key}_hd", help="Altezza libera ingresso flusso")
+            d_thrt = st.number_input("d.thrt (Gola)", value=9.0, min_value=0.0, step=0.1, key=f"{key}_dt")
         with c3:
             st.caption("Meccanica")
-            d_clamp = st.number_input("d.clamp (Pivot)", 12.0, key=f"{key}_dc")
-            h_preload = st.number_input("h.preload (Dish)", 0.0, step=0.05, key=f"{key}_hp", help="Precarico meccanico sulla faccia")
+            d_clamp = st.number_input("d.clamp (Pivot)", value=12.0, min_value=0.0, step=0.5, key=f"{key}_dc")
+            h_preload = st.number_input("h.preload (Dish)", value=0.0, step=0.05, key=f"{key}_hp", help="Precarico meccanico sulla faccia")
             clicks = st.slider("Clicker", 0, 30, 12, key=f"{key}_clk")
 
         # Geometry Wizard per d.thrt
