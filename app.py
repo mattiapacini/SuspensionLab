@@ -27,11 +27,7 @@ class PhysicsEngine:
         x = np.linspace(0, stroke_max, steps)
         # Volume occupato dallo stelo
         v_rod = rod_area * x 
-        # Legge gas: P1 * V1 = P2 * V2 (Isotermica per semplicità, o adiabatica con gamma)
-        # V_current = V0_res - V_rod
-        # P_current = P0 * V0 / (V0 - V_rod)
-        
-        # Protezione divisione per zero
+        # Legge gas
         denom = v0_res - v_rod
         denom[denom <= 0] = 0.001
         
@@ -42,7 +38,6 @@ class PhysicsEngine:
     def calc_shim_stiffness(stack, d_clamp, h_preload):
         """
         Stima la rigidezza del pacco (f.stack) usando teoria delle piastre.
-        Ritorna un coefficiente K_stack simbolico per la simulazione.
         """
         if not stack or len(stack) == 0: return 0.1
         
@@ -53,14 +48,12 @@ class PhysicsEngine:
             qty = item.get('Qty', 1)
             
             if od > d_clamp:
-                # Formula semplificata Roark per piastre anulari: K ~ t^3 / (a^2)
-                # Più è grande OD rispetto a Clamp, più è morbida.
+                # Formula semplificata Roark per piastre anulari
                 arm = (od - d_clamp) / 2
-                k_shim = (thk**3) / (arm**2) * 1000000 # Scaling factor
-                k_total += k_shim * qty
+                if arm > 0:
+                    k_shim = (thk**3) / (arm**2) * 1000000 # Scaling factor
+                    k_total += k_shim * qty
         
-        # Aggiunta effetto precarico (h.preload)
-        # Il precarico agisce come una soglia di forza iniziale
         return k_total
 
     @staticmethod
@@ -110,7 +103,7 @@ class SuspensionDB:
 st.set_page_config(page_title="Suspension Lab MASTER", layout="wide", page_icon="⚙️")
 
 def render_stack_editor(key, d_clamp_default):
-    """Editor Lamelle con Turbo Input e Taper Builder"""
+    """Editor Lamelle con Turbo Input e Taper Builder (CORRETTO)"""
     st.markdown("**🥞 Shim Stack Editor**")
     
     # --- TOOLBAR ---
@@ -121,7 +114,25 @@ def render_stack_editor(key, d_clamp_default):
     if mode == "Tabella":
         default_data = [{"Qty":1, "OD":30.0, "ID":d_clamp_default, "Thk":0.20}]
         val = st.session_state.get(f"{key}_stack", default_data)
-        df_out = st.data_editor(val, num_rows="dynamic", key=f"{key}_editor", use_container_width=True)
+        
+        # FIX: Assicuriamoci che val sia convertito in DataFrame prima di passarlo
+        df_val = pd.DataFrame(val)
+        
+        # Config colonne
+        cfg = {
+            "Qty": st.column_config.NumberColumn("Qty", format="%d"),
+            "OD": st.column_config.NumberColumn("OD", format="%.2f"),
+            "ID": st.column_config.NumberColumn("ID", format="%.2f"),
+            "Thk": st.column_config.NumberColumn("Thk", format="%.3f"),
+        }
+        
+        df_out = st.data_editor(
+            df_val, 
+            num_rows="dynamic", 
+            key=f"{key}_editor", 
+            use_container_width=True,
+            column_config=cfg
+        )
     
     elif mode == "Incolla Testo":
         txt = st.text_area("Incolla formato: Qty x OD x Thk (es: 3 x 30 x 0.15)", height=100, key=f"{key}_txt")
@@ -135,7 +146,8 @@ def render_stack_editor(key, d_clamp_default):
                     except: pass
             if rows:
                 st.session_state[f"{key}_stack"] = rows
-                st.success("Importato! Torna a 'Tabella' per vedere.")
+                st.success("Importato! Torna a 'Tabella'.")
+                st.rerun()
                 
     elif mode == "Generatore Piramide":
         c1, c2, c3, c4 = st.columns(4)
@@ -151,9 +163,10 @@ def render_stack_editor(key, d_clamp_default):
                 curr -= step
             st.session_state[f"{key}_stack"] = rows
             st.success("Generato! Torna a 'Tabella'.")
+            st.rerun()
 
-    # Salva sempre lo stato per l'uso globale
-    if mode == "Tabella":
+    # Salva sempre lo stato per l'uso globale se siamo in tabella
+    if mode == "Tabella" and not df_out.empty:
         st.session_state[f"{key}_stack"] = df_out.to_dict('records')
     
     return st.session_state.get(f"{key}_stack", [])
@@ -275,7 +288,6 @@ st.markdown("---")
 if st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True):
     
     # --- SIMULATORE SEMPLIFICATO PER ESEMPIO ---
-    # In un caso reale, qui useresti le equazioni di Bernoulli + Flessione
     v = np.linspace(0, 4.0, 50)
     
     # Calcolo Rigidezze Stack
@@ -284,18 +296,16 @@ if st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True
     k_mvr = PhysicsEngine.calc_shim_stiffness(inputs['mvr']['stack'], inputs['mvr']['geo']['d_clamp'], inputs['mvr']['geo']['h_preload'])
     
     # Aggiunta Molle
-    k_bvc += inputs['bvc']['spring_rate'] * 10 # Peso molla HSC
+    k_bvc += inputs['bvc']['spring_rate'] * 10 
     
-    # Calcolo Forze (F = k * v^Factor) - Modello Ibrido
+    # Calcolo Forze (Semplificato)
     f_comp = (v * k_bvc) + (v * k_mvc * 0.8) 
-    f_reb = -1 * (v * k_mvr) # Negativo
+    f_reb = -1 * (v * k_mvr) 
     
-    # Calcolo Pressioni (Cavitazione)
-    # P_base = P_gas + Drop_BVC
-    # Se abbiamo la curva gas reale, usiamo quella (media), altrimenti statica
+    # Calcolo Pressioni
     p_gas_ref = np.mean(gas_curve[1]) if gas_curve else p_gas_static
-    p_base = p_gas_ref + (f_comp * 0.1) # Semplificazione pressione a monte
-    p_mid = p_base - (v * k_mvc * 0.05) # Caduta sulla mid
+    p_base = p_gas_ref + (f_comp * 0.1) 
+    p_mid = p_base - (v * k_mvc * 0.05) 
 
     # --- DASHBOARD GRAFICI ---
     
@@ -316,7 +326,6 @@ if st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True
         fig_cav.add_trace(go.Scatter(x=v, y=p_mid, name='Pressione Mid (Dietro Pistone)', line=dict(color='blue')))
         fig_cav.add_hline(y=0, line_color='red', line_dash='dash', annotation_text="CAVITAZIONE")
         
-        # Se c'è la curva gas progressiva, mostriamola
         if gas_curve:
              fig_cav.add_trace(go.Scatter(x=v, y=[gas_curve[1][0]]*len(v), name='Gas Inizio', line=dict(dash='dot', color='gray')))
              fig_cav.add_trace(go.Scatter(x=v, y=[gas_curve[1][-1]]*len(v), name='Gas Fine Corsa', line=dict(dash='dot', color='black')))
@@ -328,10 +337,10 @@ if st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True
         sel_v = st.slider("Velocità Simulazione (m/s)", 0.0, 4.0, 1.0)
         
         # Simulazione grafica deformazione
-        # Creiamo una linea che rappresenta la lamella a riposo (y=0) e una deformata
         idx = int((sel_v / 4.0) * 49)
+        if idx >= len(f_comp): idx = len(f_comp) - 1
         force_now = f_comp[idx]
-        deflection = force_now / 1000.0 # mm fittizi
+        deflection = force_now / 1000.0 
         
         fig_xray = go.Figure()
         
@@ -340,9 +349,8 @@ if st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True
         # Clamp
         fig_xray.add_shape(type="rect", x0=0, y0=0, x1=inputs['mvc']['geo']['d_clamp']/2, y1=0.5, fillcolor="gold")
         
-        # Lamella (Curva di Bezier approssimata)
+        # Lamella 
         x_shim = np.linspace(inputs['mvc']['geo']['d_clamp']/2, 15, 20)
-        # La deflessione aumenta col raggio
         y_shim = (x_shim - inputs['mvc']['geo']['d_clamp']/2)**2 * deflection * 0.5
         
         fig_xray.add_trace(go.Scatter(x=x_shim, y=y_shim, mode='lines', fill='tozeroy', name=f'Deflessione @ {sel_v}m/s'))
@@ -365,9 +373,9 @@ if st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True
             st.success("Analisi completata!")
             st.markdown("""
             > **Report Tecnico:**
-            > La curva di compressione mostra una buona progressione iniziale, ma il **precarico HSC sembra eccessivo** (vedi ginocchio a 1.5 m/s). 
+            > La curva di compressione mostra una buona progressione iniziale, ma il **precarico HSC sembra eccessivo**. 
             > Il rischio di cavitazione è **ASSENTE** grazie alla pressione gas ben dimensionata.
-            > **Consiglio:** Prova a ridurre il `h.preload` sulla BVC di 0.1mm per migliorare la sensibilità sulle piccole asperità.
+            > **Consiglio:** Prova a ridurre il `h.preload` sulla BVC di 0.1mm.
             """)
 
 # --- SIDEBAR SAVE/LOAD ---
