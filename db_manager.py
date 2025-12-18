@@ -23,7 +23,6 @@ class SuspensionDB:
         conn = SuspensionDB._get_conn()
         conn.update(worksheet=sheet_name, data=df)
 
-    # --- PILOTI ---
     @staticmethod
     def get_piloti():
         df = SuspensionDB._read_sheet("Piloti")
@@ -34,13 +33,6 @@ class SuspensionDB:
         df["ID"] = df["ID"].astype(str)
         return df
 
-    @staticmethod
-    def add_pilota(nome, peso, liv, tel, note):
-        df = SuspensionDB.get_piloti()
-        nr = pd.DataFrame([{"ID": str(uuid.uuid4())[:8], "Nome": nome, "Peso": peso, "Livello": liv, "Telefono": tel, "Note": note}])
-        SuspensionDB._write_sheet("Piloti", pd.concat([df, nr], ignore_index=True))
-
-    # --- GARAGE ---
     @staticmethod
     def get_garage(pid=None):
         df = SuspensionDB._read_sheet("Garage")
@@ -53,13 +45,6 @@ class SuspensionDB:
         if pid: return df[df["id_pilota"] == str(pid)]
         return df
 
-    @staticmethod
-    def add_mezzo(pid, tipo, marca, mod, anno, f_mod, m_mod):
-        df = SuspensionDB.get_garage()
-        nr = pd.DataFrame([{"id_mezzo": str(uuid.uuid4())[:8], "id_pilota": str(pid), "tipo": tipo, "marca": marca, "modello": mod, "anno": anno, "forcella_modello": f_mod, "mono_modello": m_mod}])
-        SuspensionDB._write_sheet("Garage", pd.concat([df, nr], ignore_index=True))
-
-    # --- SESSIONI ---
     @staticmethod
     def get_sessioni(mid):
         df = SuspensionDB._read_sheet("Sessioni")
