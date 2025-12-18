@@ -31,6 +31,8 @@ st.markdown("""
     }
     h1, h2, h3 { color: #1a1c24; }
     .stButton>button { border-radius: 5px; font-weight: 600; }
+    /* Fix per metriche e testi */
+    p, label { font-size: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -100,7 +102,7 @@ with st.sidebar:
         
         mezzo_sel_full = st.selectbox("🏍️ MEZZO", ["Nuovo Mezzo..."] + lista_mezzi)
         
-        # Estraiamo il vero ID_MEZZO dalla stringa (che è formato "Nome #ID")
+        # Estraiamo il vero ID_MEZZO dalla stringa
         if mezzo_sel_full and "#" in mezzo_sel_full:
             id_mezzo_corrente = mezzo_sel_full.split("#")[-1]
 
@@ -121,7 +123,7 @@ with st.sidebar:
                     time.sleep(1)
                     st.rerun()
 
-    # FORM AGGIUNTA MEZZO (Con le tue colonne forcella/mono)
+    # FORM AGGIUNTA MEZZO
     if id_pilota_corrente:
         with st.expander("➕ Aggiungi Moto"):
             with st.form("new_m", clear_on_submit=True):
@@ -130,7 +132,6 @@ with st.sidebar:
                 m_marca = st.text_input("Marca")
                 m_mod = st.text_input("Modello")
                 m_anno = st.number_input("Anno", 2000, 2030, 2024)
-                # COLONNE NUOVE RICHIESTE
                 m_fork = st.text_input("Modello Forcella")
                 m_mono = st.text_input("Modello Mono")
                 
@@ -149,22 +150,23 @@ if id_mezzo_corrente:
 
     tab_setup, tab_sim, tab_diario, tab_history = st.tabs(["🔧 SETUP", "🧪 SIMULATORE", "📝 DIARIO", "🗃️ STORICO"])
 
-    # --- TAB SETUP ---
+    # --- TAB SETUP (FIXED KEYS PER EVITARE CRASH) ---
     with tab_setup:
         c1, c2, c3 = st.columns(3)
         with c1:
             st.info("Forcella")
-            st.number_input("Molla (N/mm)", 0.0, 20.0, 4.6, step=0.1)
-            st.slider("Comp", 0, 30, 12)
-            st.slider("Reb", 0, 30, 12)
+            # Aggiunte le keys univoche per evitare DuplicateElementId
+            st.number_input("Molla (N/mm)", 0.0, 20.0, 4.6, step=0.1, key="k_fork_val") 
+            st.slider("Comp", 0, 30, 12, key="comp_fork_val")
+            st.slider("Reb", 0, 30, 12, key="reb_fork_val")
         with c2:
             st.warning("Mono")
-            st.number_input("Molla (N/mm)", 0.0, 150.0, 54.0, step=1.0)
-            st.slider("Comp H", 0, 30, 10)
-            st.slider("Reb", 0, 30, 12)
+            st.number_input("Molla (N/mm)", 0.0, 150.0, 54.0, step=1.0, key="k_shock_val")
+            st.slider("Comp H", 0, 30, 10, key="comph_shock_val")
+            st.slider("Reb", 0, 30, 12, key="reb_shock_val")
         with c3:
             st.success("Note")
-            st.text_area("Note Setup Attuale", height=150)
+            st.text_area("Note Setup Attuale", height=150, key="note_setup_general")
 
     # --- TAB SIMULATORE ---
     with tab_sim:
@@ -175,32 +177,34 @@ if id_mezzo_corrente:
             with st.container(border=True):
                 st.markdown("**Valvola**")
                 geo_data = {
-                    "d_piston": st.number_input("Ø Pistone", value=50.0),
+                    "d_piston": st.number_input("Ø Pistone", value=50.0, key="sim_dp"),
                     "d_rod": 16.0,
-                    "r_port": st.number_input("r.port", value=12.0),
+                    "r_port": st.number_input("r.port", value=12.0, key="sim_rp"),
                     "w_port": 8.0, "n_ports": 4
                 }
 
         with c_stack:
             with st.container(border=True):
                 st.markdown("**Stack**")
-                sim_d_clamp = st.number_input("Ø Clamp", value=12.0)
+                sim_d_clamp = st.number_input("Ø Clamp", value=12.0, key="sim_dc")
                 if "sim_stack" not in st.session_state: st.session_state["sim_stack"] = []
                 
                 cc1, cc2, cc3 = st.columns([0.8, 1, 1])
-                qty = cc1.number_input("Q", 1, 10, 1)
-                od = cc2.number_input("OD", 6.0, 44.0, 30.0)
-                th = cc3.selectbox("Th", [0.10, 0.15, 0.20, 0.25, 0.30])
+                qty = cc1.number_input("Q", 1, 10, 1, key="add_q")
+                od = cc2.number_input("OD", 6.0, 44.0, 30.0, key="add_od")
+                th = cc3.selectbox("Th", [0.10, 0.15, 0.20, 0.25, 0.30], key="add_th")
                 
-                if st.button("⬇️ Add"):
+                if st.button("⬇️ Add", key="btn_add"):
                     st.session_state["sim_stack"].append({"qty": qty, "od": od, "th": th})
                 
                 if st.session_state["sim_stack"]:
                     st.dataframe(pd.DataFrame(st.session_state["sim_stack"]), hide_index=True)
-                    if st.button("🗑️ Reset"): st.session_state["sim_stack"] = []; st.rerun()
+                    if st.button("🗑️ Reset", key="btn_rst"): 
+                        st.session_state["sim_stack"] = []
+                        st.rerun()
 
         with c_res:
-            if st.button("🔥 CALCOLA", type="primary", use_container_width=True):
+            if st.button("🔥 CALCOLA", type="primary", use_container_width=True, key="btn_calc"):
                 if st.session_state["sim_stack"]:
                     k = SuspensionPhysics.calculate_stiffness_factor(st.session_state["sim_stack"], sim_d_clamp, geo_data["d_piston"])
                     df_res = SuspensionPhysics.simulate_damping_curve(k, geo_data)
@@ -222,7 +226,6 @@ if id_mezzo_corrente:
             
             if st.form_submit_button("💾 SALVA SESSIONE", type="primary"):
                 if f_pista:
-                    # Passiamo l'ID_MEZZO corrente recuperato dalla selezione
                     SuspensionDB.save_session(id_mezzo_corrente, f_pista, f_cond, f_feed, f_rating, snapshot)
                     st.success("Salvato!")
                     time.sleep(1)
