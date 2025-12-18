@@ -1,6 +1,23 @@
 import streamlit as st
+import subprocess
+import sys
+
+# --- HACK: INSTALLAZIONE FORZATA ---
+# Se Streamlit ignora requirements.txt, lo obblighiamo a installare qui.
+try:
+    import matplotlib
+except ImportError:
+    st.toast("🔧 Installazione forzata di Matplotlib in corso...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib"])
+    import matplotlib
+
+# Ora importiamo il resto normalmente
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+# -----------------------------------
+
+# ... qui sotto continua il tuo codice normale ...
 
 # --- BLOCCO DI SICUREZZA PER MATPLOTLIB ---
 try:
