@@ -13,26 +13,36 @@ except ImportError:
     st.error("⚠️ ERRORE: Assicurati che db_manager.py e physics.py siano presenti.")
     st.stop()
 
-# --- CONFIGURAZIONE ---
+# --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(
-    page_title="SuspensionLab",
+    page_title="SuspensionLab Pro",
     page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# --- CSS PROFESSIONALE ---
 st.markdown("""
 <style>
+    /* Colori Sfondi e Sidebar */
     [data-testid="stSidebar"] { background-color: #1a1c24; border-right: 1px solid #333; }
     [data-testid="stSidebar"] * { color: #e0e0e0 !important; }
+    
+    /* Input più leggibili */
     [data-testid="stSidebar"] input, [data-testid="stSidebar"] div[data-baseweb="select"] > div {
         background-color: #2b303b !important; color: white !important; border: 1px solid #4a4e59 !important;
     }
-    .stButton>button { border-radius: 5px; font-weight: 600; }
+    
+    /* Header settori */
+    .header-fork { color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 5px; margin-bottom: 15px; }
+    .header-shock { color: #e67e22; border-bottom: 2px solid #e67e22; padding-bottom: 5px; margin-bottom: 15px; }
+    
+    /* Tabelle */
+    [data-testid="stDataFrame"] { border: 1px solid #444; border-radius: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- VISUALIZER ---
+# --- FUNZIONE GRAFICA ---
 def plot_shim_bending(k_factor, stack, d_clamp, d_piston, geo_data):
     if not stack: return None
     max_od = max([float(x['od']) for x in stack])
@@ -40,12 +50,13 @@ def plot_shim_bending(k_factor, stack, d_clamp, d_piston, geo_data):
     colors = ['#2ecc71', '#f1c40f', '#e74c3c']
     
     df_sim = SuspensionPhysics.simulate_damping_curve(k_factor, geo_data)
-    fig, ax = plt.subplots(figsize=(8, 3.5))
+    fig, ax = plt.subplots(figsize=(8, 4))
     
     r_clamp = d_clamp / 2.0
     r_piston = d_piston / 2.0
     r_port = geo_data['r_port']
     
+    # Disegno tecnico
     ax.plot([0, r_piston], [0, 0], color='#2c3e50', linewidth=4, label='Pistone') 
     ax.fill_between([0, r_clamp], [0, 0], [0.5, 0.5], color='#34495e', label='Clamp')
     ax.axvline(x=r_port, color='gray', linestyle='--', linewidth=1, alpha=0.5)
@@ -57,8 +68,8 @@ def plot_shim_bending(k_factor, stack, d_clamp, d_piston, geo_data):
         ax.plot(radii, deflections, color=colors[i], linewidth=2, label=f'{v} m/s')
         ax.fill_between(radii, deflections, 0, color=colors[i], alpha=0.1)
 
-    ax.set_title("Visualizzazione Flessione Reale", fontsize=10)
-    ax.set_ylim(-0.5, 3.0)
+    ax.set_title("Profilo Flessione Reale", fontsize=10, fontweight='bold')
+    ax.set_ylim(-0.5, 3.5)
     ax.legend(loc='upper left', fontsize=8)
     ax.grid(True, linestyle=':', alpha=0.3)
     return fig
@@ -76,9 +87,9 @@ if not st.session_state["autenticato"]:
                 st.rerun()
     st.stop() 
 
-# --- SIDEBAR ---
+# --- SIDEBAR (NAVIGATORE) ---
 with st.sidebar:
-    st.title("🗂️ NAVIGATORE")
+    st.title("🗂️ ARCHIVIO")
     st.markdown("---")
     
     try:
@@ -141,75 +152,100 @@ if id_mezzo_corrente:
     st.markdown(f"## 🛠️ {nome_mezzo_display} <span style='font-size:0.6em; color:gray'>Workspace</span>", unsafe_allow_html=True)
     st.markdown("---")
 
-    tab_setup, tab_sim, tab_diario, tab_history = st.tabs(["🔧 SETUP", "🧪 SIMULATORE", "📝 DIARIO", "🗃️ STORICO"])
+    tab_setup, tab_sim, tab_diario, tab_history = st.tabs(["🔧 SETUP ATTUALE", "🧪 ANALISI & STACK", "📝 DIARIO & NOTE", "🗃️ STORICO"])
 
-    # --- TAB SETUP (FIXED KEYS) ---
+    # --- TAB 1: SETUP COMPLETO (Forcella & Mono separati) ---
     with tab_setup:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.info("Forcella")
-            st.number_input("Molla (N/mm)", 0.0, 20.0, 4.6, step=0.1, key="k_fork_val") 
-            st.slider("Comp", 0, 30, 12, key="comp_fork_val")
-            st.slider("Reb", 0, 30, 12, key="reb_fork_val")
-        with c2:
-            st.warning("Mono")
-            st.number_input("Molla (N/mm)", 0.0, 150.0, 54.0, step=1.0, key="k_shock_val")
-            st.slider("Comp H", 0, 30, 10, key="comph_shock_val")
-            st.slider("Reb", 0, 30, 12, key="reb_shock_val")
-        with c3:
-            st.success("Note")
-            st.text_area("Note Setup Attuale", height=150, key="note_setup_general")
-
-    # --- TAB SIMULATORE (NUOVA INTERFACCIA VELOCE) ---
-    with tab_sim:
-        st.subheader("Analisi Idraulica")
-        c_geo, c_stack = st.columns([1, 2])
+        # Layout a due colonne separate visivamente
+        col_fork, col_shock = st.columns(2)
         
-        # 1. GEOMETRIA VALVOLA (Compatta)
-        with c_geo:
-            st.markdown("##### ⚙️ Valvola")
+        # --- ZONA FORCELLA ---
+        with col_fork:
+            st.markdown("<h3 class='header-fork'>🔹 FORCELLA / FRONT</h3>", unsafe_allow_html=True)
             with st.container(border=True):
-                sim_dp = st.number_input("Ø Pistone", 10.0, 60.0, 50.0, key="sim_dp")
-                sim_rp = st.number_input("Raggio Port (Leva)", 1.0, 30.0, 12.0, key="sim_rp")
-                sim_dc = st.number_input("Ø Clamp (Fulcro)", 6.0, 30.0, 12.0, key="sim_dc")
+                c_f1, c_f2 = st.columns(2)
+                f_molla = c_f1.number_input("Molla (N/mm o Bar)", value=4.6, step=0.1, key="f_k")
+                f_olio = c_f2.number_input("Livello Olio / Quantità", value=350, step=10, key="f_oil")
                 
-                geo_data = {
-                    "d_piston": sim_dp, "d_rod": 16.0,
-                    "r_port": sim_rp, "w_port": 8.0, "n_ports": 4
-                }
+                st.markdown("---")
+                c_f3, c_f4, c_f5 = st.columns(3)
+                f_comp = c_f3.number_input("Comp", 0, 40, 12, key="f_c")
+                f_reb = c_f4.number_input("Reb", 0, 40, 12, key="f_r")
+                f_pre = c_f5.number_input("Preload (mm)", 0, 50, 5, key="f_pre")
+                
+                st.markdown("---")
+                f_pos = st.text_input("Posizione (Sfilamento)", "2a Tacca / 5mm", key="f_pos")
+                f_note = st.text_area("Note Tecniche Forcella", height=80, key="f_note")
 
-        # 2. EDITOR STACK (Tabella Editabile - Molto più veloce)
-        with c_stack:
-            st.markdown("##### 🥞 Stack Lamelle")
-            
-            # Prepariamo i dati iniziali se vuoti
+        # --- ZONA MONO ---
+        with col_shock:
+            st.markdown("<h3 class='header-shock'>🔸 MONO / REAR</h3>", unsafe_allow_html=True)
+            with st.container(border=True):
+                c_s1, c_s2 = st.columns(2)
+                s_molla = c_s1.number_input("Molla (N/mm o Lbs)", value=54.0, step=1.0, key="s_k")
+                s_sag = c_s2.number_input("Sag Statico (mm)", value=35, step=1, key="s_sag")
+                
+                st.markdown("---")
+                c_s3, c_s4 = st.columns(2)
+                s_comph = c_s3.number_input("Comp HIGH", 0, 40, 10, key="s_ch")
+                s_compl = c_s4.number_input("Comp LOW", 0, 40, 12, key="s_cl")
+                
+                c_s5, c_s6 = st.columns(2)
+                s_reb = c_s5.number_input("Reb", 0, 40, 12, key="s_r")
+                s_pre = c_s6.number_input("Preload (mm)", 0, 50, 8, key="s_pre")
+
+                st.markdown("---")
+                s_len = st.text_input("Interasse / Lunghezza", "Standard", key="s_len")
+                s_note = st.text_area("Note Tecniche Mono", height=80, key="s_note")
+
+    # --- TAB 2: ANALISI & TABELLA STACK ---
+    with tab_sim:
+        col_input, col_graph = st.columns([1.5, 2]) # Più spazio alla tabella
+        
+        # PARTE SINISTRA: TABELLA STACK & GEOMETRIA
+        with col_input:
+            # 1. Geometria (Raggruppata per non occupare spazio)
+            with st.expander("⚙️ Geometria Valvola", expanded=True):
+                cg1, cg2, cg3 = st.columns(3)
+                sim_dp = cg1.number_input("Ø Pistone", value=50.0, key="s_dp")
+                sim_rp = cg2.number_input("R. Port", value=12.0, key="s_rp")
+                sim_dc = cg3.number_input("Ø Clamp", value=12.0, key="s_dc")
+                
+                geo_data = {"d_piston": sim_dp, "d_rod": 16.0, "r_port": sim_rp, "w_port": 8.0, "n_ports": 4}
+
+            # 2. TABELLA STACK (Il cuore della richiesta)
+            st.markdown("##### 🥞 Stack Editor")
+            st.caption("Modifica la tabella come su Excel. Aggiungi righe col tasto + in basso.")
+
             if "stack_df" not in st.session_state:
+                # Dati iniziali di esempio
                 st.session_state["stack_df"] = pd.DataFrame(
-                    [{"qty": 1, "od": 20.0, "th": 0.15}], 
+                    [{"qty": 1, "od": 20.0, "th": 0.15}, {"qty": 1, "od": 18.0, "th": 0.15}], 
                     columns=["qty", "od", "th"]
                 )
 
-            # CONFIGURAZIONE EDITOR
+            # EDITOR POTENTE
             edited_df = st.data_editor(
                 st.session_state["stack_df"],
-                num_rows="dynamic",
+                num_rows="dynamic", # Permette di aggiungere/togliere righe
                 column_config={
-                    "qty": st.column_config.NumberColumn("Quantità", min_value=1, step=1, format="%d"),
-                    "od": st.column_config.NumberColumn("Ø Esterno", min_value=6.0, max_value=50.0, step=0.5, format="%.1f"),
-                    "th": st.column_config.NumberColumn("Spessore", min_value=0.05, max_value=0.50, step=0.05, format="%.2f")
+                    "qty": st.column_config.NumberColumn("Q.tà", min_value=1, step=1, format="%d", width="small"),
+                    "od": st.column_config.NumberColumn("Ø Esterno (mm)", min_value=6.0, max_value=60.0, step=0.5, format="%.1f"),
+                    "th": st.column_config.NumberColumn("Spessore (mm)", min_value=0.05, max_value=0.50, step=0.01, format="%.2f")
                 },
                 use_container_width=True,
-                key="editor_stack"
+                hide_index=True,
+                key="stack_editor_main"
             )
-            
-            # Aggiorniamo lo stato
             st.session_state["stack_df"] = edited_df
 
-        st.markdown("---")
-        
-        # 3. RISULTATI
-        if st.button("🔥 CALCOLA ANALISI", type="primary", use_container_width=True):
-            # Convertiamo il DataFrame in lista di dizionari per la fisica
+            if st.button("🔥 AGGIORNA CALCOLI", type="primary", use_container_width=True):
+                st.rerun()
+
+        # PARTE DESTRA: RISULTATI GRAFICI
+        with col_graph:
+            st.markdown("##### 📊 Risultati Analisi")
+            
             stack_list = edited_df.to_dict('records')
             
             if stack_list and len(stack_list) > 0:
@@ -217,58 +253,101 @@ if id_mezzo_corrente:
                     k = SuspensionPhysics.calculate_stiffness_factor(stack_list, sim_dc, sim_dp)
                     df_res = SuspensionPhysics.simulate_damping_curve(k, geo_data)
                     
-                    r1, r2 = st.columns([1, 1])
-                    with r1:
-                        st.pyplot(plot_shim_bending(k, stack_list, sim_dc, sim_dp, geo_data))
-                    with r2:
-                        st.line_chart(df_res.set_index("Velocità (m/s)")["Forza (N)"])
+                    # Grafico Flessione (Bello grande)
+                    st.pyplot(plot_shim_bending(k, stack_list, sim_dc, sim_dp, geo_data))
+                    
+                    # Grafico Curva
+                    st.line_chart(df_res.set_index("Velocità (m/s)")["Forza (N)"], height=250)
+                    
+                    # Dati numerici rapidi
+                    m1, m2 = st.columns(2)
+                    m1.metric("K Rigidezza", f"{k:.1f}")
+                    m2.metric("Forza Max", f"{df_res['Forza (N)'].max():.0f} N")
                 except Exception as e:
-                    st.error(f"Errore nel calcolo: {e}")
+                    st.error(f"Errore calcolo: {e}")
             else:
-                st.warning("Inserisci almeno una lamella nella tabella.")
+                st.info("Inserisci almeno una lamella nella tabella a sinistra.")
 
-    # --- TAB DIARIO ---
+    # --- TAB 3: DIARIO (Salvataggio Sessione) ---
     with tab_diario:
-        st.subheader("Report Sessione")
+        st.subheader("📝 Report Sessione")
         with st.form("diario_form"):
             c1, c2 = st.columns(2)
             f_pista = c1.text_input("📍 Pista / Luogo")
-            f_cond = c2.selectbox("🌤️ Condizione", ["Secco", "Fango", "Sabbia", "Misto"])
-            f_feed = st.text_area("💬 Feedback")
-            f_rating = st.slider("⭐ Voto", 1, 5, 3)
+            f_cond = c2.selectbox("🌤️ Condizione", ["Secco", "Fango", "Sabbia", "Misto", "Bagnato"])
             
-            # Salviamo lo stack tabellare nel JSON
-            stack_to_save = st.session_state.get("stack_df", pd.DataFrame()).to_dict('records')
-            snapshot = {"stack": stack_to_save, "geo": geo_data}
+            st.markdown("---")
+            f_feed = st.text_area("💬 Feedback Pilota / Sensazioni", height=100)
+            f_rating = st.slider("⭐ Voto Sessione", 1, 5, 3)
             
-            if st.form_submit_button("💾 SALVA SESSIONE", type="primary"):
+            # RACCOLTA DATI PER SALVATAGGIO (Setup + Stack + Geo)
+            setup_snapshot = {
+                "forcella": {
+                    "molla": f_molla, "olio": f_olio, "comp": f_comp, "reb": f_reb, 
+                    "preload": f_pre, "pos": f_pos, "note": f_note
+                },
+                "mono": {
+                    "molla": s_molla, "sag": s_sag, "comp_h": s_comph, "comp_l": s_compl, 
+                    "reb": s_reb, "preload": s_pre, "len": s_len, "note": s_note
+                }
+            }
+            
+            stack_snapshot = st.session_state.get("stack_df", pd.DataFrame()).to_dict('records')
+            
+            full_data = {
+                "setup": setup_snapshot,
+                "stack": stack_snapshot,
+                "geo": geo_data
+            }
+            
+            if st.form_submit_button("💾 SALVA SESSIONE NEL DB", type="primary"):
                 if f_pista:
-                    SuspensionDB.save_session(id_mezzo_corrente, f_pista, f_cond, f_feed, f_rating, snapshot)
-                    st.success("Salvato!")
+                    SuspensionDB.save_session(id_mezzo_corrente, f_pista, f_cond, f_feed, f_rating, full_data)
+                    st.success("Sessione Salvata con successo!")
                     time.sleep(1)
                     st.rerun()
+                else:
+                    st.warning("Inserisci almeno il nome della pista.")
 
-    # --- TAB STORICO ---
+    # --- TAB 4: STORICO ---
     with tab_history:
-        st.subheader("Storico")
+        st.subheader("🗃️ Storico Interventi")
         df_hist = SuspensionDB.get_history_by_mezzo(id_mezzo_corrente)
+        
         if not df_hist.empty:
             for _, row in df_hist.iterrows():
                 with st.expander(f"📅 {row['data']} - {row['pista_luogo']} (Voto: {row['rating']})"):
                     st.write(f"**Condizione:** {row['condizione']}")
                     st.write(f"**Feedback:** {row['feedback_text']}")
+                    
                     try:
+                        # Recupera i dati salvati
                         dati = json.loads(row['dati_tecnici_json'])
-                        if dati.get('stack'):
-                            st.caption("Stack usato:")
+                        
+                        # Mostra Setup usato
+                        if "setup" in dati:
+                            sf = dati['setup'].get('forcella', {})
+                            sm = dati['setup'].get('mono', {})
+                            
+                            col_h1, col_h2 = st.columns(2)
+                            with col_h1:
+                                st.caption("🟦 Setup Forcella")
+                                st.json(sf, expanded=False)
+                            with col_h2:
+                                st.caption("🟧 Setup Mono")
+                                st.json(sm, expanded=False)
+
+                        # Mostra Stack usato
+                        if "stack" in dati:
+                            st.caption("🥞 Stack Usato")
                             st.dataframe(pd.DataFrame(dati['stack']), hide_index=True)
                     except:
                         pass
         else:
-            st.info("Nessuna sessione.")
+            st.info("Nessuna sessione registrata per questa moto.")
 
 else:
     st.markdown("<br><br><br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
-        st.info("👈 Seleziona un Pilota e una Moto per iniziare.")
+        st.info("👈 Inizia selezionando un Pilota e una Moto dal menu laterale.")
