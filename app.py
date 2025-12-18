@@ -19,30 +19,42 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS PERSONALIZZATO (NUOVI COLORI) ---
+# --- CSS PERSONALIZZATO (DARK SIDEBAR) ---
 st.markdown("""
 <style>
-    /* Stile Bottoni */
-    div.stButton > button {
-        height: 3em;
-        font-weight: bold;
-        width: 100%;
-        border-radius: 6px;
-        border: 1px solid #a0a0a0;
-    }
-    
-    /* --- NUOVO COLORE BARRA LATERALE --- */
+    /* --- BARRA LATERALE SCURA (Dark Blue/Grey) --- */
     [data-testid="stSidebar"] {
-        background-color: #dce1e6; /* Grigio-Blu Tecnico più scuro */
-        border-right: 2px solid #bcc4cc; /* Bordo di separazione */
+        background-color: #1a1c24; /* Quasi nero/blu notte */
+        border-right: 1px solid #333;
+    }
+
+    /* Testi nella barra laterale tutti BIANCHI */
+    [data-testid="stSidebar"] h1, 
+    [data-testid="stSidebar"] h2, 
+    [data-testid="stSidebar"] h3, 
+    [data-testid="stSidebar"] label, 
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] p {
+        color: #ffffff !important;
     }
     
-    /* Colore titoli per contrasto */
+    /* Stile Bottoni nella barra laterale (per vederli sul nero) */
+    [data-testid="stSidebar"] button {
+        background-color: #2b303b;
+        color: white;
+        border: 1px solid #4a4e59;
+    }
+    [data-testid="stSidebar"] button:hover {
+        border-color: #00ace6;
+        color: #00ace6;
+    }
+    
+    /* Titoli principali nella pagina bianca */
     h1, h2, h3 {
-        color: #2c3e50;
+        color: #1a1c24;
     }
     
-    /* Migliora leggibilità tab */
+    /* Tab più leggibili */
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
         font-size: 1.1rem;
         font-weight: 600;
@@ -57,17 +69,18 @@ if "autenticato" not in st.session_state:
     st.session_state["autenticato"] = False
 
 if not st.session_state["autenticato"]:
-    st.markdown("<br><br><br>", unsafe_allow_html=True)
+    st.markdown("<br><br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
         st.markdown("""
-        <div style='background-color: #f0f2f6; padding: 30px; border-radius: 10px; border: 1px solid #ccc; text-align: center;'>
-            <h2>🔒 Accesso Team</h2>
-            <p>Inserisci la password per accedere al Suspension Lab</p>
+        <div style='background-color: #f0f2f6; padding: 40px; border-radius: 12px; border: 1px solid #ccc; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
+            <h2 style='color:#333'>🔒 Accesso Team</h2>
+            <p style='color:#666'>Inserisci la password di sicurezza</p>
         </div>
+        <br>
         """, unsafe_allow_html=True)
         input_pass = st.text_input("Password", type="password")
-        if st.button("Accedi", type="primary"):
+        if st.button("ACCEDI AL LAB", type="primary"):
             if input_pass == PASSWORD_SEGRETA:
                 st.session_state["autenticato"] = True
                 st.rerun()
@@ -86,7 +99,7 @@ with st.sidebar:
     try:
         lista_piloti = SuspensionDB.get_piloti_options()
     except Exception as e:
-        st.error("Errore connessione DB")
+        st.error("Errore DB")
         lista_piloti = []
 
     pilota_sel = st.selectbox("👤 SELEZIONA PILOTA", ["Seleziona..."] + lista_piloti)
@@ -106,11 +119,12 @@ with st.sidebar:
     st.markdown("---")
     
     # --- C. INSERIMENTO NUOVI DATI (FORM) ---
-    st.subheader("➕ Gestione Rapida")
+    st.subheader("➕ Gestione")
 
     # 1. FORM NUOVO PILOTA
-    with st.expander("📝 Crea Nuovo Pilota"):
+    with st.expander("📝 Nuovo Pilota"):
         with st.form("form_new_pilota"):
+            st.markdown("Compila i dati del nuovo pilota:")
             n_nome = st.text_input("Nome e Cognome")
             n_peso = st.number_input("Peso (kg)", 40, 150, 75)
             n_liv = st.selectbox("Livello", ["Amatore", "Agonista", "Pro", "Hobby"])
@@ -128,9 +142,9 @@ with st.sidebar:
 
     # 2. FORM NUOVO MEZZO
     if id_pilota_corrente:
-        with st.expander("🏍️ Aggiungi Moto/Bici"):
+        with st.expander("🏍️ Nuovo Mezzo"):
             with st.form("form_new_mezzo"):
-                st.caption(f"Proprietario: **{pilota_sel}**")
+                st.write(f"Proprietario: **{pilota_sel.split('(')[0]}**")
                 m_tipo = st.selectbox("Tipo", ["MOTO", "MTB"])
                 m_marca = st.text_input("Marca")
                 m_mod = st.text_input("Modello")
@@ -148,7 +162,7 @@ with st.sidebar:
                     else:
                         st.warning("Inserisci il modello!")
     else:
-        st.info("Seleziona un pilota per aggiungere mezzi.")
+        st.info("Seleziona un pilota per abilitare l'aggiunta mezzi.")
 
 # ==============================================================================
 # 4. INTESTAZIONE DINAMICA
@@ -156,17 +170,17 @@ with st.sidebar:
 if mezzo_sel and mezzo_sel != "Nuovo Mezzo...":
     nome_mezzo = mezzo_sel.split("(")[0]
     tipo_mezzo = "MOTO" if "MOTO" in mezzo_sel else "MTB"
-    # Colori badge personalizzati
-    badge_bg = "#2c3e50" if tipo_mezzo == "MOTO" else "#2980b9"
+    # Badge scuri ed eleganti
+    badge_bg = "#1a1c24" 
     
     st.markdown(f"""
     ## 🛠️ {nome_mezzo}
-    <span style='background-color:{badge_bg}; padding:5px 10px; border-radius:5px; color:white; font-weight:bold; font-size:0.9em'>{tipo_mezzo}</span>
+    <span style='background-color:{badge_bg}; padding:6px 12px; border-radius:6px; color:white; font-weight:bold; font-size:0.9em; letter-spacing: 1px;'>{tipo_mezzo}</span>
     """, unsafe_allow_html=True)
 
 else:
     st.title("🛠️ Suspension Lab")
-    st.info("👈 Inizia selezionando un Pilota dalla colonna grigia a sinistra.")
+    st.info("👈 Inizia selezionando un Pilota dal menu scuro a sinistra.")
     st.stop()
 
 st.markdown("---")
@@ -200,12 +214,14 @@ with tab_sim:
     st.subheader("Analisi Idraulica")
     c1, c2 = st.columns([3, 1])
     with c1:
-        # Grafico dimostrativo
         chart_data = pd.DataFrame(np.random.randn(20, 2), columns=['Forza', 'Velocità'])
         st.line_chart(chart_data)
     with c2:
         st.write("**Stack Compressione**")
-        st.text("20 x 0.10\n18 x 0.10\n16 x 0.10")
+        st.code("""20 x 0.10
+18 x 0.10
+16 x 0.10
+14 x 0.10""", language="text")
 
 # --- TAB 3: DIARIO ---
 with tab_diario:
