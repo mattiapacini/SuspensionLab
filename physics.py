@@ -2,105 +2,151 @@ import numpy as np
 import pandas as pd
 
 class SuspensionPhysics:
-    
+    """
+    Motore di calcolo per sospensioni.
+    Replica la logica base di simulatori tipo Restackor:
+    1. Calcola la rigidezza meccanica dello stack (Roark's Formulas per piastre).
+    2. Calcola la forza idraulica basata sulla geometria dei port (Bernoulli).
+    """
+
     @staticmethod
     def calculate_stiffness_factor(stack_list, clamp_d, piston_d):
         """
-        Calcola un indice di rigidezza basato sulla teoria delle piastre circolari.
-        Non è un FEA completo (come Restackor), ma una buona approssimazione analitica.
+        Calcola un fattore di rigidezza (K) dello stack.
+        Input:
+            - stack_list: lista di dict {'od': mm, 'th': mm, 'qty': int}
+            - clamp_d: diametro del clamp (mm)
+            - piston_d: diametro del pistone (mm) (usato per scalare il braccio di leva)
+        Output:
+            - float: Indice di rigidezza (N/mm eq)
         """
         if not stack_list:
-            return 0, []
+            return 0.0
 
-        # Convertiamo in DataFrame per comodità
-        df = pd.DataFrame(stack_list)
+        # Parametri fisici acciaio armonico
+        E = 206000  # Modulo di Young (MPa)
+        nu = 0.3    # Coefficiente di Poisson
+
+        total_stiffness = 0.0
         
-        # Parametri fisici
-        E = 200000  # Modulo Young Acciaio (MPa)
-        nu = 0.3    # Coefficiente Poisson
+        # Ordiniamo lo stack dal più grande (vicino al pistone) al più piccolo (clamp)
+        # In un calcolo semplificato, sommiamo i contributi di rigidezza.
         
-        total_stiffness = 0
-        
-        # Algoritmo semplificato "Roark's Formula" per piastre anulari
-        # Calcoliamo la rigidezza equivalente sommando i contributi
-        # Nota: In un simulatore reale servirebbe considerare l'interazione tra lamelle (friction)
-        
-        for _, shim in df.iterrows():
-            # Geometria
-            a = shim['od'] / 2.0  # Raggio esterno
-            b = clamp_d / 2.0     # Raggio interno (Clamp)
-            t = shim['th']        # Spessore
+        for item in stack_list:
+            qty = float(item['qty'])
+            od = float(item['od'])
+            th = float(item['th'])
             
-            if a <= b: continue # La lamella è più piccola del clamp, non flette
+            # Raggi
+            a = od / 2.0      # Raggio esterno lamella
+            b = clamp_d / 2.0 # Raggio interno (vincolo)
             
-            # Fattore geometrico K per piastra incastrata al centro e caricata uniformemente
-            # (Approssimazione del carico idraulico distribuito)
+            if a <= b:
+                continue # La lamella è più piccola o uguale al clamp, non lavora
+            
+            # --- FORMULA DI ROARK (Caso: Piastra circolare forata, bordo est. libero, int. incastrato) ---
+            # Semplificazione del coefficiente geometrico K_roark basato sul rapporto a/b
             ratio = a / b
-            # Formula empirica semplificata per la costante di rigidezza
-            K_geo = (0.17 * ratio**2) # Semplificazione coefficiente Roark
+            # Questa è un'approssimazione polinomiale del fattore K per la deflessione
+            K_geo = 0.18 * (ratio - 1)**2 + 0.5 
             
-            # Rigidezza della singola lamella (N/mm)
-            # D = E * t^3 / (12 * (1 - nu^2))
-            D = (E * t**3) / (12 * (1 - nu**2))
+            # Rigidezza D della singola lamella (Plate Constant)
+            # D = (E * t^3) / (12 * (1 - v^2))
+            D = (E * (th**3)) / (12 * (1 - nu**2))
             
-            # Deflessione y = q * a^4 / D * K ... invertiamo per trovare la rigidezza
-            # Stiffness pro capite pesata sulla quantità
-            k_shim = (D / (a**2 * K_geo)) * shim['qty']
+            # Rigidezza alla punta (N/mm) -> F / y
+            # y = (F * a^2) / D * factor... invertiamo:
+            k_single = (D / (a**2 * K_geo)) 
             
-            total_stiffness += k_shim
+            # MOLTIPLICATORE DI LEVA IDRAULICA
+            # La pressione non agisce sulla punta, ma su r.port.
+            # Più la lamella è grande rispetto al clamp, più è "morbida" all'apparenza.
+            # Più spessa è, più è rigida (al cubo).
             
-        return total_stiffness
+            total_stiffness += k_single * qty
+
+        # Restituisce un numero scalato per essere leggibile (es. 20-500)
+        return total_stiffness * 1000 
 
     @staticmethod
-    def simulate_damping_curve(stiffness_nm, geometry_dict):
+    def simulate_damping_curve(stiffness_factor, geo_dict):
         """
-        Genera la curva Forza/Velocità basata su Bernoulli e l'apertura delle lamelle.
+        Genera la curva Forza-Velocità.
+        Input:
+            - stiffness_factor: Il risultato di calculate_stiffness_factor
+            - geo_dict: {'r_port': mm, 'w_port': mm, 'n_ports': int, 'd_piston': mm}
         """
-        # Estrai parametri geometrici del pistone
-        r_port = geometry_dict.get('r_port', 10.0) # Raggio centro passaggi
-        w_port = geometry_dict.get('w_port', 8.0)  # Larghezza passaggi
-        n_ports = geometry_dict.get('n_ports', 4)  # Numero passaggi
+        # Estrai geometria
+        r_port = geo_dict.get('r_port', 12.0) # Braccio di leva della pressione
+        w_port = geo_dict.get('w_port', 8.0)  # Larghezza passaggio
+        n_ports = geo_dict.get('n_ports', 4)
+        d_piston = geo_dict.get('d_piston', 50.0)
+        d_rod = geo_dict.get('d_rod', 16.0) # Se non c'è, usiamo standard 16
+
+        # Calcolo Aree
+        area_piston = np.pi * (d_piston/2)**2 - np.pi * (d_rod/2)**2 # Area idraulica (mm2)
+        area_port_max = w_port * r_port * 0.5 * n_ports # Stima area massima passaggi (mm2)
         
-        # Area passaggi a "valvola aperta" (Saturation)
-        max_area = (w_port * r_port * 2 * np.pi / n_ports) * n_ports # Semplificato
-        
-        velocities = np.linspace(0, 5, 50) # Da 0 a 5 m/s
+        velocities = np.linspace(0, 6, 60) # Da 0 a 6 m/s
         forces = []
+        
+        # Densità olio (kg/m3) circa 870
+        rho = 870 
         
         for v in velocities:
             if v == 0:
                 forces.append(0)
                 continue
             
-            # 1. Calcolo Pressione richiesta per spingere quel flusso (Bernoulli base)
-            # Q (Portata) = Velocità stelo * Area Pistone
-            area_piston = np.pi * (50/2)**2 - np.pi * (12/2)**2 # Es. 50mm pistone, 12mm asta
-            Q = v * area_piston / 1000 # Litri/sec ca. (unità da aggiustare)
+            # 1. Portata Olio (Q) in m^3/s
+            # Q = Area_pistone * Velocità
+            Q = (area_piston * 1e-6) * v 
             
-            # 2. La pressione spinge le lamelle -> Forza sulle lamelle
-            # Forza Idraulica = Pressione * Area passaggi
-            # Ma la Pressione dipende dall'apertura (Area_effettiva)
-            # Area_effettiva dipende dalla deflessione (Stiffness)
+            # 2. Deflessione Stack (Apertura)
+            # La pressione apre lo stack. Più è rigido, meno apre.
+            # Modello semplificato iterativo:
+            # Pressione stimata P ~ v
+            # Forza su stack ~ P * Area_port
+            # Deflessione y = F_stack / K_stack
             
-            # Iterazione per trovare l'equilibrio (semplificata)
-            # F_shim = K * x (x = apertura)
-            # Area_flow = Perimetro * x
-            # DeltaP = (Q / (Cd * Area_flow))^2
-            # F_fluid = DeltaP * Area_port
+            # Simuliamo l'apertura progressiva (y)
+            # Factor empirico per convertire stiffness in resistenza all'apertura
+            opening_resistance = stiffness_factor * 50 
             
-            # Risolviamo analiticamente approssimando Area_flow lineare con la forza
-            # Forza Damping Fd ~ v^x
+            # Area di flusso effettiva (Variable Orifice)
+            # A_flow = A_bleed + (A_apertura * v / resistance)
+            # Non può superare area_port_max
             
-            # Modello Ibrido Lineare-Quadratico basato sulla rigidezza
-            # Più è rigido, più assomiglia a un orifizio fisso (Quadratico)
-            # Più è morbido, più è lineare (Valvola che apre)
+            # Area dinamica che cresce con la velocità (lo stack si piega)
+            # Più stiffness è alto, più A_dyn cresce lentamente
+            A_dyn = (v * 500) / (opening_resistance + 1)
             
-            # Fattore di smorzamento "base"
-            damping_coeff = stiffness_nm * 0.5 
+            # Aggiungiamo un bleed fisso (clicker) simulato
+            A_bleed = 2.0 # mm2 equivalenti
             
-            # Forza = coeff * v + idraulica pura
-            force = damping_coeff * v + (v**2 * 50) 
+            A_total = A_bleed + A_dyn
+            if A_total > area_port_max: A_total = area_port_max
             
-            forces.append(force)
+            # Converti in m^2
+            A_total_m2 = A_total * 1e-6
             
-        return pd.DataFrame({"Velocità (m/s)": velocities, "Forza (N)": forces})
+            # 3. Bernoulli: Delta P = 0.5 * rho * (Q / (Cd * A))^2
+            Cd = 0.7 # Coefficiente di scarico
+            
+            try:
+                DeltaP = 0.5 * rho * (Q / (Cd * A_total_m2))**2
+            except:
+                DeltaP = 0
+            
+            # 4. Forza Totale all'asta
+            # F = DeltaP * Area_pistone
+            F_newton = DeltaP * (area_piston * 1e-6)
+            
+            # Converti in kg (opzionale) o lascia in Newton. Qui usiamo Newton.
+            forces.append(F_newton)
+
+        # Output DataFrame
+        return pd.DataFrame({
+            "Velocità (m/s)": velocities,
+            "Forza (N)": forces
+        })
