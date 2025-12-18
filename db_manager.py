@@ -15,6 +15,7 @@ class SuspensionDB:
     def load_data(sheet_name):
         conn = SuspensionDB.get_connection()
         try:
+            # ttl=0 assicura che i dati siano sempre freschi
             df = conn.read(worksheet=sheet_name, ttl=0)
             df = df.dropna(how="all")
             return df
@@ -26,31 +27,47 @@ class SuspensionDB:
     def add_pilota(nome, peso, livello, telefono, note):
         conn = SuspensionDB.get_connection()
         df = SuspensionDB.load_data("PILOTI")
+        
         nuovo_id = f"P{len(df) + 1:03d}"
         nuova_riga = pd.DataFrame([{
             "id_pilota": nuovo_id, "nome_completo": nome, "peso_kg": peso,
             "livello": livello, "telefono": telefono, "note_fisiche": note
         }])
-        conn.update(worksheet="PILOTI", data=pd.concat([df, nuova_riga], ignore_index=True))
+        
+        # Gestione dataframe vuoto
+        if df.empty:
+            df_aggiornato = nuova_riga
+        else:
+            df_aggiornato = pd.concat([df, nuova_riga], ignore_index=True)
+            
+        conn.update(worksheet="PILOTI", data=df_aggiornato)
         return True
 
     @staticmethod
     def add_mezzo(id_pilota, tipo, marca, modello, anno, forcella, mono):
         conn = SuspensionDB.get_connection()
         df = SuspensionDB.load_data("GARAGE")
+        
         nuovo_id = f"M{len(df) + 1:03d}"
         nuova_riga = pd.DataFrame([{
             "id_mezzo": nuovo_id, "id_pilota": id_pilota, "tipo": tipo,
             "marca": marca, "modello": modello, "anno": anno,
             "forcella_modello": forcella, "mono_modello": mono
         }])
-        conn.update(worksheet="GARAGE", data=pd.concat([df, nuova_riga], ignore_index=True))
+        
+        if df.empty:
+            df_aggiornato = nuova_riga
+        else:
+            df_aggiornato = pd.concat([df, nuova_riga], ignore_index=True)
+
+        conn.update(worksheet="GARAGE", data=df_aggiornato)
         return True
 
     @staticmethod
     def save_session(id_mezzo, pista, condizione, feedback, rating, dati_tecnici):
         conn = SuspensionDB.get_connection()
         df = SuspensionDB.load_data("DIARIO")
+        
         new_row = pd.DataFrame([{
             "id_sessione": str(uuid.uuid4())[:8],
             "id_mezzo": id_mezzo,
@@ -61,10 +78,16 @@ class SuspensionDB:
             "rating": rating,
             "dati_tecnici_json": json.dumps(dati_tecnici)
         }])
-        conn.update(worksheet="DIARIO", data=pd.concat([df, new_row], ignore_index=True))
+        
+        if df.empty:
+            updated_df = new_row
+        else:
+            updated_df = pd.concat([df, new_row], ignore_index=True)
+
+        conn.update(worksheet="DIARIO", data=updated_df)
         return True
 
-    # --- LETTURA (Read) - NUOVA INTEGRAZIONE ---
+    # --- LETTURA (Read) ---
     @staticmethod
     def get_piloti_options():
         df = SuspensionDB.load_data("PILOTI")
@@ -75,15 +98,20 @@ class SuspensionDB:
     def get_mezzi_by_pilota(id_pilota):
         df = SuspensionDB.load_data("GARAGE")
         if df.empty: return []
+        # Filtra solo i mezzi del pilota selezionato
         filtered = df[df['id_pilota'] == id_pilota]
         return [f"{row['modello']} - {row['tipo']} ({row['id_mezzo']})" for _, row in filtered.iterrows()]
 
     @staticmethod
     def get_history_by_mezzo(id_mezzo):
-        """Recupera tutte le sessioni passate di una specifica moto"""
+        """Recupera lo storico delle sessioni per una moto specifica"""
         df = SuspensionDB.load_data("DIARIO")
         if df.empty: return pd.DataFrame()
+        
         # Filtra per ID moto
         filtered = df[df['id_mezzo'] == id_mezzo]
-        # Ordina dalla più recente
+        
+        if filtered.empty: return pd.DataFrame()
+        
+        # Ordina dalla più recente alla più vecchia
         return filtered.sort_values(by="data", ascending=False)
