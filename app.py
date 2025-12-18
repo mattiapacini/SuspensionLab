@@ -16,7 +16,22 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+# --- BUTTAFUORI (PASSWORD) ---
+password_segreta = "sospensioni2025" # <--- Cambiala con quella che vuoi
 
+if "autenticato" not in st.session_state:
+    st.session_state["autenticato"] = False
+
+if not st.session_state["autenticato"]:
+    st.title("🔒 Accesso Riservato")
+    input_pass = st.text_input("Inserisci Password", type="password")
+    if st.button("Entra"):
+        if input_pass == password_segreta:
+            st.session_state["autenticato"] = True
+            st.rerun() # Ricarica la pagina per entrare
+        else:
+            st.error("Password errata!")
+    st.stop() # Blocca tutto il resto del codice se non sei entrato
 # --- CSS PERSONALIZZATO ---
 st.markdown("""
 <style>
