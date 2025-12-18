@@ -1,10 +1,21 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import json
-import time
-import matplotlib.pyplot as plt
 
+# --- BLOCCO DI SICUREZZA PER MATPLOTLIB ---
+try:
+    import matplotlib.pyplot as plt
+    has_matplotlib = True
+except Exception as e:
+    has_matplotlib = False
+    # Non mostriamo l'errore subito per non bloccare l'app
+# ------------------------------------------
+
+# Se usi gsheets, proteggi anche lui per ora:
+try:
+    from streamlit_gsheets import GSheetsConnection
+except:
+    pass
 # --- IMPORT MODULI ---
 try:
     from db_manager import SuspensionDB
