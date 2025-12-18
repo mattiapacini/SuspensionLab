@@ -3,149 +3,144 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 import json
+import uuid
 
 class SuspensionDB:
     @staticmethod
     def get_connection():
         return st.connection("gsheets", type=GSheetsConnection)
 
+    # --- 1. GESTIONE PILOTI (ANAGRAFICA) ---
     @staticmethod
-    def init_db():
-        """Legge l'anagrafica Piloti e sistema i nomi delle colonne"""
+    def get_piloti_options():
         conn = SuspensionDB.get_connection()
         try:
             df = conn.read(worksheet="Piloti", ttl=0)
-            
-            # Mappa per capire i nomi delle colonne, vecchi o nuovi
+            # Mappatura colonne piloti (per sicurezza)
             mappa = {
                 "nome_completo": "Nome", "id_pilota": "ID", 
                 "peso_kg": "Peso", "livello": "Livello", 
                 "telefono": "Telefono", "note_fisiche": "Note"
             }
+            # Normalizza nomi
+            df.columns = [c.strip().lower() for c in df.columns]
+            df = df.rename(columns={k.lower(): v for k, v in mappa.items()})
             
-            # Normalizza nomi colonne (minuscolo e senza spazi)
-            df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-            df = df.rename(columns=mappa)
-            
-            # Assicura che le colonne essenziali esistano
-            cols_finali = ["ID", "Nome", "Telefono", "Peso", "Livello", "Note"]
-            for col in cols_finali:
-                found = False
-                for existing in df.columns:
-                    if existing.lower() == col.lower():
-                        df = df.rename(columns={existing: col})
-                        found = True
-                        break
-                if not found:
-                    df[col] = "" 
-
-            return df
+            # Se trova la colonna Nome e ID
+            if "nome" in df.columns and "id" in df.columns:
+                 df = df[df["nome"].notna() & (df["nome"] != "")]
+                 return [f"{row['nome']} ({row['id']})" for _, row in df.iterrows()]
+            return []
         except:
-            return pd.DataFrame(columns=["ID", "Nome", "Telefono", "Peso", "Livello", "Note"])
-
-    @staticmethod
-    def get_piloti_options():
-        df = SuspensionDB.init_db()
-        if df.empty: return []
-        df = df[df["Nome"] != ""]
-        return [f"{row['Nome']} ({row['ID']})" for _, row in df.iterrows()]
+            return []
 
     @staticmethod
     def add_pilota(nome, peso, livello, telefono, note):
         conn = SuspensionDB.get_connection()
-        df = SuspensionDB.init_db()
+        try:
+            df = conn.read(worksheet="Piloti", ttl=0)
+        except:
+             # Struttura base se vuoto
+             df = pd.DataFrame(columns=["id_pilota", "nome_completo", "telefono", "peso_kg", "livello", "note_fisiche"])
+
         new_id = f"{nome[:3].upper()}{int(datetime.now().timestamp())}"[-6:]
         
+        # Usa i nomi colonne che probabilmente hai nel foglio Piloti
         new_row = pd.DataFrame([{
-            "ID": new_id, "Nome": nome, "Telefono": telefono,
-            "Peso": peso, "Livello": livello, "Note": note
+            "id_pilota": new_id, 
+            "nome_completo": nome, 
+            "telefono": telefono,
+            "peso_kg": peso, 
+            "livello": livello, 
+            "note_fisiche": note
         }])
         
-        # Salviamo nel foglio Piloti
         updated = pd.concat([df, new_row], ignore_index=True)
         conn.update(worksheet="Piloti", data=updated)
         return new_id
 
-    # --- GESTIONE GARAGE (STRETTA E PULITA) ---
+    # --- 2. GESTIONE GARAGE (CON LE TUE COLONNE ESATTE) ---
     @staticmethod
     def get_mezzi_by_pilota(id_pilota):
         conn = SuspensionDB.get_connection()
         try:
-            # Legge SOLO il foglio Garage
             df = conn.read(worksheet="Garage", ttl=0)
             
-            # Pulisce i nomi delle colonne per sicurezza
-            df.columns = [c.strip().lower() for c in df.columns]
-            rename_map = {"id_pilota": "ID_Pilota", "modello": "Modello", "tipo": "Tipo"}
-            df = df.rename(columns=rename_map)
-            
-            # Filtra le moto di quel pilota specifico
-            # Converte entrambi in stringa per evitare errori di tipo
-            moto_del_pilota = df[df['ID_Pilota'].astype(str) == str(id_pilota)]
+            # Assicura che id_pilota sia stringa per il confronto
+            df['id_pilota'] = df['id_pilota'].astype(str)
+            mezz = df[df['id_pilota'] == str(id_pilota)]
             
             lista = []
-            for _, row in moto_del_pilota.iterrows():
-                modello = str(row.get('Modello', ''))
-                tipo = str(row.get('Tipo', ''))
-                if modello and modello != "nan":
-                    lista.append(f"{modello} ({tipo})")
-            
+            for _, row in mezz.iterrows():
+                # Crea la stringa per il menu a tendina
+                nome_moto = f"{row['modello']} ({row['tipo']})"
+                # Aggiungiamo l'ID mezzo nascosto nella stringa per recuperarlo dopo
+                lista.append(f"{nome_moto} #{row['id_mezzo']}") 
             return lista
         except Exception as e:
-            # Se il foglio Garage non esiste o è vuoto, ritorna lista vuota
             return []
 
     @staticmethod
-    def add_mezzo(id_pilota, tipo, marca, modello, anno, fork, mono):
+    def add_mezzo(id_pilota, tipo, marca, modello, anno, forcella, mono):
         conn = SuspensionDB.get_connection()
         try:
             df = conn.read(worksheet="Garage", ttl=0)
         except:
-            # Se non esiste, crea la struttura
-            df = pd.DataFrame(columns=["ID_Pilota", "Tipo", "Marca", "Modello", "Anno"])
+            # Crea struttura con le TUE colonne
+            df = pd.DataFrame(columns=["id_mezzo", "id_pilota", "tipo", "marca", "modello", "anno", "forcella_modello", "mono_modello"])
+
+        # Genera ID Mezzo univoco
+        id_mezzo = f"M{int(datetime.now().timestamp())}"
 
         new_row = pd.DataFrame([{
-            "ID_Pilota": id_pilota, "Tipo": tipo, "Marca": marca, 
-            "Modello": modello, "Anno": anno
+            "id_mezzo": id_mezzo,
+            "id_pilota": id_pilota,
+            "tipo": tipo,
+            "marca": marca,
+            "modello": modello,
+            "anno": anno,
+            "forcella_modello": forcella,
+            "mono_modello": mono
         }])
         
         updated = pd.concat([df, new_row], ignore_index=True)
         conn.update(worksheet="Garage", data=updated)
 
-    # --- GESTIONE SESSIONI / DIARIO (STRETTA E PULITA) ---
+    # --- 3. GESTIONE DIARIO / SESSIONI (CON LE TUE COLONNE ESATTE) ---
     @staticmethod
     def save_session(id_mezzo, pista, condizione, feedback, rating, dati_tecnici):
         conn = SuspensionDB.get_connection()
         try:
-            df = conn.read(worksheet="Sessioni", ttl=0)
+            df = conn.read(worksheet="Sessioni", ttl=0) # O "Diario" se l'hai rinominato
         except:
-            # Se non esiste, crea la struttura
-            cols = ["data", "id_mezzo", "pista_luogo", "condizione", "feedback_text", "rating", "dati_tecnici_json"]
+            # Crea struttura con le TUE colonne
+            cols = ["id_sessione", "id_mezzo", "data", "pista_luogo", "condizione", "feedback_text", "rating", "dati_tecnici_json"]
             df = pd.DataFrame(columns=cols)
 
+        # Genera ID Sessione
+        id_sessione = f"S{int(datetime.now().timestamp())}"
+
         new_row = pd.DataFrame([{
+            "id_sessione": id_sessione,
+            "id_mezzo": id_mezzo,
             "data": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "id_mezzo": id_mezzo, 
             "pista_luogo": pista,
-            "condizione": condizione, 
+            "condizione": condizione,
             "feedback_text": feedback,
-            "rating": rating, 
+            "rating": rating,
             "dati_tecnici_json": json.dumps(dati_tecnici)
         }])
         
         updated = pd.concat([df, new_row], ignore_index=True)
-        conn.update(worksheet="Sessioni", data=updated)
+        conn.update(worksheet="Sessioni", data=updated) # Assicurati che il foglio si chiami "Sessioni" o "Diario"
 
     @staticmethod
     def get_history_by_mezzo(id_mezzo):
         conn = SuspensionDB.get_connection()
         try:
-            # Legge SOLO il foglio Sessioni
             df = conn.read(worksheet="Sessioni", ttl=0)
             if df.empty: return pd.DataFrame()
             
-            # Filtra per la moto selezionata
-            # Converte ID in stringa per sicurezza
             df['id_mezzo'] = df['id_mezzo'].astype(str)
             return df[df['id_mezzo'] == str(id_mezzo)].sort_values(by="data", ascending=False)
         except:
