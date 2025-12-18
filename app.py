@@ -6,9 +6,9 @@ from physics import SuspensionPhysics
 from db_manager import SuspensionDB
 
 # --- CONFIGURAZIONE UI ---
-st.set_page_config(layout="wide", page_title="SuspensionLab PRO", page_icon="⚙️")
+st.set_page_config(layout="wide", page_title="SuspensionLab", page_icon="⚙️")
 
-# CSS per layout compatto e professionale
+# CSS
 st.markdown("""
 <style>
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
@@ -19,28 +19,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- INIZIALIZZAZIONE DATI ---
-# Assicura che ci siano dati di default se non si carica nulla dal DB
-if "init_done" not in st.session_state:
+# --- INIZIALIZZAZIONE ROBUSTA (Fix Crash) ---
+# Controlliamo ogni singola chiave. Se manca, la creiamo.
+if "fork_bv_df" not in st.session_state:
     st.session_state["fork_bv_df"] = pd.DataFrame([{"qty": 5, "od": 24.0, "th": 0.15}, {"qty": 1, "od": 18.0, "th": 0.10}])
+
+if "fork_mv_df" not in st.session_state:
     st.session_state["fork_mv_df"] = pd.DataFrame([{"qty": 3, "od": 20.0, "th": 0.10}])
+
+if "shock_comp_df" not in st.session_state:
     st.session_state["shock_comp_df"] = pd.DataFrame([{"qty": 8, "od": 44.0, "th": 0.20}, {"qty": 1, "od": 30.0, "th": 0.15}])
+
+if "shock_reb_df" not in st.session_state:
     st.session_state["shock_reb_df"] = pd.DataFrame([{"qty": 4, "od": 40.0, "th": 0.15}])
-    
-    # GEOMETRIA FORCELLA (WP 48 AER Standard)
+
+# Ecco le chiavi che ti davano errore: le forziamo qui.
+if "geo_f" not in st.session_state:
     st.session_state["geo_f"] = {
         'd_piston': 24.0, 'd_rod': 12.0, 'n_port': 4, 'w_port': 8.0, 
         'd_throat': 4.0, 'oil_visc': 15.0, 'clicks': 12
     }
-    # GEOMETRIA MONO (WP Linkage Standard)
+
+if "geo_s" not in st.session_state:
     st.session_state["geo_s"] = {
         'd_piston': 50.0, 'd_rod': 18.0, 'n_port': 4, 'w_port': 12.0, 
         'd_throat': 6.0, 'oil_visc': 12.0, 'clicks': 15
     }
-    
+
+if "current_pilot_id" not in st.session_state:
     st.session_state["current_pilot_id"] = None
+
+if "current_bike_id" not in st.session_state:
     st.session_state["current_bike_id"] = None
-    st.session_state["init_done"] = True
 
 # --- FUNZIONI ---
 def render_stack(key, label):
@@ -65,7 +75,7 @@ def calc_k(df):
     return max(k, 0.1)
 
 # ==============================================================================
-# SIDEBAR: GESTIONE COMPLETA
+# SIDEBAR
 # ==============================================================================
 with st.sidebar:
     st.title("🗂️ ARCHIVIO")
@@ -76,60 +86,64 @@ with st.sidebar:
     sel_p = st.selectbox("Pilota", opt_p)
     
     if sel_p != "SELEZIONA PILOTA...":
-        pid = df_p.iloc[opt_p.index(sel_p)-1]["ID"]
-        st.session_state["current_pilot_id"] = pid
-        
-        # 2. MOTO
-        df_m = SuspensionDB.get_garage(pid)
-        opt_m = ["SELEZIONA MOTO..."]
-        if not df_m.empty: opt_m += df_m.apply(lambda x: f"{x['marca']} {x['modello']}", axis=1).tolist()
-        sel_m = st.selectbox("Garage", opt_m)
-        
-        if sel_m != "SELEZIONA MOTO...":
-            mid = df_m.iloc[opt_m.index(sel_m)-1]["id_mezzo"]
-            st.session_state["current_bike_id"] = mid
+        # Gestione sicura dell'indice
+        try:
+            pid = df_p.iloc[opt_p.index(sel_p)-1]["ID"]
+            st.session_state["current_pilot_id"] = pid
             
-            # 3. SESSIONI
-            st.divider()
-            st.write("📂 **Storico Sessioni**")
-            df_s = SuspensionDB.get_sessioni(mid)
-            if not df_s.empty:
-                opt_s = df_s.apply(lambda x: f"{x['data']} | {x['pista_luogo']}", axis=1).tolist()
-                sel_s = st.selectbox("Carica Setup:", opt_s)
+            # 2. MOTO
+            df_m = SuspensionDB.get_garage(pid)
+            opt_m = ["SELEZIONA MOTO..."]
+            if not df_m.empty: opt_m += df_m.apply(lambda x: f"{x['marca']} {x['modello']}", axis=1).tolist()
+            sel_m = st.selectbox("Garage", opt_m)
+            
+            if sel_m != "SELEZIONA MOTO...":
+                mid = df_m.iloc[opt_m.index(sel_m)-1]["id_mezzo"]
+                st.session_state["current_bike_id"] = mid
                 
-                if st.button("CARICA DATI", type="primary", use_container_width=True):
-                    row = df_s.iloc[opt_s.index(sel_s)]
-                    dati = SuspensionDB.parse_json(row['dati_tecnici_json'])
+                # 3. SESSIONI
+                st.divider()
+                st.write("📂 **Storico Sessioni**")
+                df_s = SuspensionDB.get_sessioni(mid)
+                if not df_s.empty:
+                    opt_s = df_s.apply(lambda x: f"{x['data']} | {x['pista_luogo']}", axis=1).tolist()
+                    sel_s = st.selectbox("Carica Setup:", opt_s)
                     
-                    # Ripristino Stack
-                    if 'f_bv' in dati: st.session_state["fork_bv_df"] = pd.DataFrame(dati['f_bv'])
-                    if 'f_mv' in dati: st.session_state["fork_mv_df"] = pd.DataFrame(dati['f_mv'])
-                    if 's_comp' in dati: st.session_state["shock_comp_df"] = pd.DataFrame(dati['s_comp'])
-                    if 's_reb' in dati: st.session_state["shock_reb_df"] = pd.DataFrame(dati['s_reb'])
-                    
-                    # Ripristino Geometrie (Importante!)
-                    if 'geo_f' in dati: st.session_state["geo_f"] = dati['geo_f']
-                    if 'geo_s' in dati: st.session_state["geo_s"] = dati['geo_s']
-                    
-                    st.toast("Setup Caricato con Successo!", icon="✅")
-                    st.rerun()
+                    if st.button("CARICA DATI", type="primary", use_container_width=True):
+                        row = df_s.iloc[opt_s.index(sel_s)]
+                        dati = SuspensionDB.parse_json(row['dati_tecnici_json'])
+                        
+                        # Ripristino Stack
+                        if 'f_bv' in dati: st.session_state["fork_bv_df"] = pd.DataFrame(dati['f_bv'])
+                        if 'f_mv' in dati: st.session_state["fork_mv_df"] = pd.DataFrame(dati['f_mv'])
+                        if 's_comp' in dati: st.session_state["shock_comp_df"] = pd.DataFrame(dati['s_comp'])
+                        if 's_reb' in dati: st.session_state["shock_reb_df"] = pd.DataFrame(dati['s_reb'])
+                        
+                        # Ripristino Geometrie (Importante!)
+                        if 'geo_f' in dati: st.session_state["geo_f"] = dati['geo_f']
+                        if 'geo_s' in dati: st.session_state["geo_s"] = dati['geo_s']
+                        
+                        st.toast("Setup Caricato con Successo!", icon="✅")
+                        st.rerun()
 
-            # SALVA
-            with st.expander("💾 Salva Sessione Corrente"):
-                pista = st.text_input("Pista")
-                cond = st.selectbox("Condizione", ["Secco", "Fango", "Sabbia", "Duro"])
-                feed = st.text_area("Feedback")
-                if st.button("SALVA"):
-                    pack = {
-                        "f_bv": st.session_state["fork_bv_df"].to_dict('records'),
-                        "f_mv": st.session_state["fork_mv_df"].to_dict('records'),
-                        "s_comp": st.session_state["shock_comp_df"].to_dict('records'),
-                        "s_reb": st.session_state["shock_reb_df"].to_dict('records'),
-                        "geo_f": st.session_state["geo_f"],
-                        "geo_s": st.session_state["geo_s"]
-                    }
-                    SuspensionDB.save_session(mid, pista, cond, feed, 3, pack)
-                    st.success("Salvato!")
+                # SALVA
+                with st.expander("💾 Salva Sessione Corrente"):
+                    pista = st.text_input("Pista")
+                    cond = st.selectbox("Condizione", ["Secco", "Fango", "Sabbia", "Duro"])
+                    feed = st.text_area("Feedback")
+                    if st.button("SALVA"):
+                        pack = {
+                            "f_bv": st.session_state["fork_bv_df"].to_dict('records'),
+                            "f_mv": st.session_state["fork_mv_df"].to_dict('records'),
+                            "s_comp": st.session_state["shock_comp_df"].to_dict('records'),
+                            "s_reb": st.session_state["shock_reb_df"].to_dict('records'),
+                            "geo_f": st.session_state["geo_f"],
+                            "geo_s": st.session_state["geo_s"]
+                        }
+                        SuspensionDB.save_session(mid, pista, cond, feed, 3, pack)
+                        st.success("Salvato!")
+        except Exception as e:
+            st.error(f"Errore nel caricamento dati: {e}")
 
 # ==============================================================================
 # MAIN: TAB E SIMULATORE
@@ -242,7 +256,8 @@ else:
             piloti = SuspensionDB.get_piloti()
             p_row = piloti[piloti["ID"] == str(st.session_state["current_pilot_id"])]
             if not p_row.empty and p_row.iloc[0]["Peso"]:
-                w_default = float(p_row.iloc[0]["Peso"])
+                try: w_default = float(p_row.iloc[0]["Peso"])
+                except: pass
 
         p_pilota = c1.number_input("Peso Pilota (kg)", 40.0, 150.0, w_default)
         k_molla = c2.number_input("Molla Mono Attuale (N/mm)", 30.0, 80.0, 45.0)
@@ -251,12 +266,9 @@ else:
         st.markdown("---")
         
         # Calcolo approssimativo Sag
-        # F = k * x -> x = F / k
-        # Peso posteriore approx 65% del totale in statico + pilota
         peso_totale_kg = 105 + p_pilota # Moto + Pilota
         carico_post_N = (peso_totale_kg * 0.65) * 9.81
         
-        # Rapporto leva medio (Linkage) approx 1:3
         linkage_ratio = 3.0
         force_shock = carico_post_N * linkage_ratio
         
