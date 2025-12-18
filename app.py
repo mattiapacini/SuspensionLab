@@ -15,7 +15,7 @@ except ImportError:
 
 # --- CONFIGURAZIONE ---
 st.set_page_config(
-    page_title="SuspensionLab Pro",
+    page_title="SuspensionLab",
     page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
