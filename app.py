@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import json
 from physics import SuspensionPhysics
+from db_manager import SuspensionDB
 
 # --- SETUP PAGINA ---
 st.set_page_config(layout="wide", page_title="SuspensionLab PRO", page_icon="⚙️")
@@ -14,26 +16,31 @@ st.markdown("""
     .stTabs [data-baseweb="tab"][aria-selected="true"] { background-color: #E67E22; color: white; }
     .metric-card { background-color: #262730; padding: 15px; border-radius: 10px; border: 1px solid #444; }
     .warning-cav { background-color: #ff4b4b; color: white; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold; }
+    div[data-testid="stToast"] { background-color: #2ecc71; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNZIONI UTILI ---
+# --- FUNZIONI DI SUPPORTO ---
+def init_session_state():
+    # Inizializza i dataframe se non esistono (o se resettati)
+    defaults = {
+        "fork_bv_df": pd.DataFrame([{"qty": 1, "od": 20.0, "th": 0.15}, {"qty": 1, "od": 18.0, "th": 0.15}, {"qty": 1, "od": 12.0, "th": 0.20}]),
+        "fork_mv_df": pd.DataFrame([{"qty": 1, "od": 20.0, "th": 0.10}, {"qty": 1, "od": 12.0, "th": 0.20}]),
+        "shock_comp_df": pd.DataFrame([{"qty": 1, "od": 40.0, "th": 0.20}, {"qty": 1, "od": 30.0, "th": 0.15}, {"qty": 1, "od": 16.0, "th": 0.30}]),
+        "shock_reb_df": pd.DataFrame([{"qty": 1, "od": 36.0, "th": 0.15}, {"qty": 1, "od": 16.0, "th": 0.30}])
+    }
+    for key, df in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = df
+
 def render_stack_editor(key_prefix):
-    if f"{key_prefix}_df" not in st.session_state:
-        st.session_state[f"{key_prefix}_df"] = pd.DataFrame([
-            {"qty": 1, "od": 20.0, "th": 0.15},
-            {"qty": 1, "od": 18.0, "th": 0.15},
-            {"qty": 1, "od": 16.0, "th": 0.15},
-            {"qty": 1, "od": 14.0, "th": 0.15},
-            {"qty": 1, "od": 12.0, "th": 0.20} # Clamp
-        ])
-    
+    # Wrapper per l'editor che usa la session state
     return st.data_editor(
         st.session_state[f"{key_prefix}_df"],
         num_rows="dynamic",
         column_config={
             "qty": st.column_config.NumberColumn("Q.tà", min_value=1, max_value=10, step=1, format="%d"),
-            "od": st.column_config.NumberColumn("Ø Est (mm)", min_value=6.0, max_value=60.0, step=0.5, format="%.1f"),
+            "od": st.column_config.NumberColumn("Ø Est", min_value=6.0, max_value=60.0, step=0.5, format="%.1f"),
             "th": st.column_config.NumberColumn("Spessore", min_value=0.05, max_value=1.0, step=0.01, format="%.2f")
         },
         use_container_width=True,
@@ -41,27 +48,45 @@ def render_stack_editor(key_prefix):
     )
 
 def calc_stack_stiffness_simple(df):
-    # Approssimazione cubica veloce per la reattività dell'UI
     k = 0.0
     try:
         for _, row in df.iterrows():
-            t = row['th']
-            qty = row['qty']
-            k += (t**3) * qty * 1000 # Fattore scala
+            k += (row['th']**3) * row['qty'] * 1000 
     except: pass
     return max(k, 0.1)
 
-# --- SIDEBAR ---
+# Inizializza lo stato
+init_session_state()
+
+# --- SIDEBAR (INPUT & SALVATAGGIO) ---
 with st.sidebar:
     st.title("🗜️ SuspensionLab")
-    st.caption("Physics Engine v2.0 (Air/Cavitation)")
+    st.caption("Physics v2.5 + Cloud DB")
     
-    st.markdown("### 🏍️ Progetto")
+    st.divider()
+    st.subheader("📝 Dati Cliente")
     modello = st.text_input("Modello Moto", "KTM 450 SX-F")
     peso_pilota = st.number_input("Peso Pilota (kg)", 50, 120, 80)
+    note_txt = st.text_area("Note Lavorazione", height=100)
+    
+    st.divider()
+    # PULSANTE SALVATAGGIO
+    if st.button("💾 SALVA PROGETTO SU CLOUD", type="primary"):
+        # Raccogliamo i dati complessi (Dataframe -> Dict per JSON)
+        fork_data = {
+            "bv": st.session_state["fork_bv_df"].to_dict('records'),
+            "mv": st.session_state["fork_mv_df"].to_dict('records')
+        }
+        shock_data = {
+            "comp": st.session_state["shock_comp_df"].to_dict('records'),
+            "reb": st.session_state["shock_reb_df"].to_dict('records')
+        }
+        
+        with st.spinner("Salvataggio su Google Sheets in corso..."):
+            SuspensionDB.save_project(modello, peso_pilota, fork_data, shock_data, note_txt)
 
 # --- TABS PRINCIPALI ---
-tab_fork, tab_shock, tab_chassis = st.tabs(["🔹 FORCELLA (Front)", "🔸 MONO (Rear)", "⚖️ TELAIO & ANALISI"])
+tab_fork, tab_shock, tab_chassis, tab_db = st.tabs(["🔹 FORCELLA", "🔸 MONO", "⚖️ TELAIO", "🗂️ DATABASE CLIENTI"])
 
 # ==============================================================================
 # 1. TAB FORCELLA
@@ -72,75 +97,66 @@ with tab_fork:
     with col_geom:
         st.subheader("📏 Geometria")
         f_type = st.selectbox("Sistema Elastico", ["AIR (Pneumatica)", "COIL (Molla)"], index=0)
-        f_layout = st.selectbox("Architettura", ["Simmetrica (2 cartucce)", "Split (Aria sx / Olio dx)", "Split Function (Comp sx / Reb dx)"])
-        
-        st.markdown("---")
-        st.caption("Misure Fisiche")
-        f_travel = st.number_input("Corsa Totale (mm)", 100, 350, 300)
+        f_travel = st.number_input("Corsa (mm)", 100, 350, 300)
         f_stelo = st.selectbox("Ø Stelo", [32, 34, 35, 36, 48, 49, 50], index=4)
         f_rod = st.number_input("Ø Asta Cartuccia", 8.0, 14.0, 12.0)
     
     with col_air:
         st.subheader("💨 Molla / Aria")
         if f_type == "AIR":
-            st.info("💡 Air Calculator Attivo")
             f_psi = st.number_input("Pressione (PSI)", 40, 200, 145)
-            
             with st.expander("🛠️ Volume Tuning (Token)", expanded=True):
                 token_type = st.selectbox("Tipo Token", list(SuspensionPhysics.TOKEN_DB.keys()))
                 n_tokens = st.slider("Numero Token", 0, 6, 0)
-                
-                # Calcolo Preview al volo
-                vol_token = SuspensionPhysics.TOKEN_DB[token_type] * n_tokens
-                st.caption(f"Riduzione Volume: -{vol_token:.1f} cc")
+                st.caption(f"Volume ridotto: -{SuspensionPhysics.TOKEN_DB[token_type]*n_tokens:.1f} cc")
         else:
-            st.info("⚙️ Molla Elicoidale")
-            f_rate = st.number_input("Rate Molla (N/mm)", 2.0, 15.0, 4.6, step=0.1)
+            f_rate = st.number_input("Rate Molla (N/mm)", 2.0, 15.0, 4.6)
             f_preload_mech = st.number_input("Precarico (mm)", 0, 20, 5)
 
     with col_hyd:
-        st.subheader("💧 Valvole (Damping)")
-        
-        tab_bv, tab_mv = st.tabs(["Base Valve (Comp)", "Mid Valve (Reb/Comp)"])
-        
+        st.subheader("💧 Valvole")
+        f_piston_diam = st.number_input("Ø Pistone Valvola (mm)", 18.0, 40.0, 24.0)
+        tab_bv, tab_mv = st.tabs(["Base Valve", "Mid Valve"])
         with tab_bv:
-            st.markdown("**Stack Compressione**")
-            df_bv = render_stack_editor("fork_bv")
-            
+            st.session_state["fork_bv_df"] = render_stack_editor("fork_bv") # Update session state directly
             c1, c2 = st.columns(2)
-            f_hdeck = c1.number_input("h.deck (mm)", 0.0, 10.0, 2.0, help="Altezza canale ingresso porta")
-            f_dthroat = c2.number_input("Ø Throat (mm)", 0.0, 50.0, 20.0, help="Diametro minimo interno")
-        
+            f_hdeck = c1.number_input("h.deck", 0.0, 10.0, 2.0)
+            f_dthroat = c2.number_input("Ø Throat", 0.0, 50.0, 20.0)
         with tab_mv:
-            st.markdown("**Stack Ritorno/Mid**")
-            df_mv = render_stack_editor("fork_mv")
-            mid_float = st.number_input("Float (mm)", 0.0, 2.0, 0.3, step=0.05)
+            st.session_state["fork_mv_df"] = render_stack_editor("fork_mv")
+            
+    # --- SIMULAZIONE FORCELLA (VISUALIZER) ---
+    st.markdown("---")
+    c_f_plot, c_f_vis = st.columns([2, 1])
     
-    # --- GRAFICO FORCELLA ---
-    st.markdown("### 📊 Analisi Forcella")
+    # Calcoli al volo
+    k_bv = calc_stack_stiffness_simple(st.session_state["fork_bv_df"])
+    geo_f = {'d_piston': f_piston_diam, 'd_rod': f_rod, 'type': 'compression', 'n_port': 4, 'w_port': 8.0, 'h_deck': f_hdeck, 'd_throat': f_dthroat}
     
-    # Calcolo Curve
-    travels = np.linspace(0, f_travel, 100)
+    vels = np.linspace(0.01, 6.0, 50)
+    f_hyd_curve = [SuspensionPhysics.solve_damping(v, k_bv, geo_f, 1.5, 0)[0] for v in vels]
+    lifts_f = [SuspensionPhysics.solve_damping(v, k_bv, geo_f, 1.5, 0)[1] for v in vels]
     
-    fig_fork = go.Figure()
-    
-    if f_type == "AIR":
-        geo_air = {'d_stelo': f_stelo, 'travel': f_travel}
-        # Curva Standard (0 Token)
-        f_air_std = SuspensionPhysics.calc_air_spring(travels, geo_air, f_psi, token_type, 0)
-        # Curva Tuned
-        f_air_tuned = SuspensionPhysics.calc_air_spring(travels, geo_air, f_psi, token_type, n_tokens)
+    with c_f_plot:
+        fig_f = go.Figure()
+        fig_f.add_trace(go.Scatter(x=vels, y=f_hyd_curve, mode='lines', line=dict(color='#3498db', width=3), name='Idraulica'))
+        fig_f.update_layout(title="Base Valve Damping", height=300, template="plotly_dark", margin=dict(l=20, r=20, t=40, b=20))
+        st.plotly_chart(fig_f, use_container_width=True)
         
-        fig_fork.add_trace(go.Scatter(x=travels, y=f_air_std, mode='lines', line=dict(dash='dash', color='gray'), name=f"{f_psi} PSI (0 Token)"))
-        fig_fork.add_trace(go.Scatter(x=travels, y=f_air_tuned, mode='lines', line=dict(color='#3498db', width=3), name=f"{f_psi} PSI ({n_tokens} Token)"))
-    else:
-        # Curva Molla Lineare
-        f_spring = (f_rate * travels) + (f_rate * f_preload_mech)
-        fig_fork.add_trace(go.Scatter(x=travels, y=f_spring, mode='lines', line=dict(color='#e67e22', width=3), name=f"Coil {f_rate} N/mm"))
-
-    fig_fork.update_layout(title="Curva Elastica (Forza vs Corsa)", xaxis_title="Corsa (mm)", yaxis_title="Forza (N)", template="plotly_dark", height=400)
-    st.plotly_chart(fig_fork, use_container_width=True)
-
+    with c_f_vis:
+        st.markdown("**Visualizer**")
+        v_vis_f = st.slider("Speed (m/s)", 0.0, 6.0, 1.0, key="v_vis_f")
+        idx_f = (np.abs(vels - v_vis_f)).argmin()
+        lift_now = lifts_f[idx_f]
+        
+        fig_sim_f = go.Figure()
+        # Lamella
+        x_s = np.linspace(6, f_piston_diam/2, 20)
+        y_s = lift_now * ((x_s - 6)/(f_piston_diam/2 - 6))**2
+        fig_sim_f.add_trace(go.Scatter(x=x_s, y=y_s, mode='lines', line=dict(color='#3498db', width=4)))
+        fig_sim_f.add_trace(go.Scatter(x=[6, f_piston_diam/2], y=[0,0], mode='lines', line=dict(color='gray'))) # Riposo
+        fig_sim_f.update_layout(height=250, template="plotly_dark", yaxis_range=[-0.2, 2.0], showlegend=False, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_sim_f, use_container_width=True)
 
 # ==============================================================================
 # 2. TAB MONO
@@ -149,164 +165,122 @@ with tab_shock:
     c_s1, c_s2, c_s3 = st.columns([1, 1, 1.5])
     
     with c_s1:
-        st.subheader("📐 Geometria Shock")
+        st.subheader("Geometria")
         s_piston = st.number_input("Ø Pistone", 36, 50, 50)
         s_rod = st.number_input("Ø Asta", 14, 18, 16)
-        
-        st.markdown("---")
-        st.caption("Pressurizzazione")
-        res_type = st.selectbox("Tipo Serbatoio", ["Bladder", "Pistone Flottante"])
-        s_pres = st.number_input("Pressione Azoto (Bar)", 5.0, 20.0, 10.0)
+        s_pres = st.number_input("Bar Azoto", 5.0, 20.0, 10.0)
     
     with c_s2:
-        st.subheader("🎛️ Registro & Bleed")
-        bleed_type = st.selectbox("Tipo Registro", ["Spillo (Standard)", "Poppet (Bitubo/TTX)"])
-        
+        st.subheader("Registro")
         max_clicks = st.number_input("Click Totali", 10, 40, 24)
-        click_val = st.slider("Posizione Clicker (da Chiuso)", 0, max_clicks, 12)
-        
-        fixed_bleed = st.number_input("Foro Fisso Pistone (mm)", 0.0, 3.0, 0.0, step=0.1, help="Foro trapanato sul pistone")
-
+        click_val = st.slider("Clicker", 0, max_clicks, 12)
+        fixed_bleed = st.number_input("Foro Fisso (mm)", 0.0, 3.0, 0.0)
+    
     with c_s3:
-        st.subheader("🥞 Stack Mono")
-        st.markdown("**Compressione**")
-        df_shock_c = render_stack_editor("shock_comp")
-        
-        st.markdown("**Ritorno**")
-        df_shock_r = render_stack_editor("shock_reb")
+        st.subheader("Stack")
+        st.markdown("**Comp**")
+        st.session_state["shock_comp_df"] = render_stack_editor("shock_comp")
+        st.markdown("**Reb**")
+        st.session_state["shock_reb_df"] = render_stack_editor("shock_reb")
 
-    # --- SIMULAZIONE IDRAULICA MONO ---
+    # --- SIMULAZIONE MONO ---
     st.markdown("---")
-    st.subheader("🧪 Simulazione Idraulica & Cavitazione")
+    c_s_plot, c_s_vis = st.columns([2, 1])
     
-    col_plot, col_vis = st.columns([2, 1])
+    # Calcoli
+    k_sc = calc_stack_stiffness_simple(st.session_state["shock_comp_df"])
+    geo_s = {'d_piston': s_piston, 'd_rod': s_rod, 'type': 'compression', 'n_port': 4, 'w_port': 12, 'h_deck': 3.0, 'd_throat': 100}
     
-    with col_plot:
-        # Preparazione Dati Simulazione
-        k_stack_c = calc_stack_stiffness_simple(df_shock_c)
-        geo_shock = {
-            'd_piston': s_piston, 'd_rod': s_rod, 'type': 'compression',
-            'n_port': 4, 'w_port': 12, 'h_deck': 3.0, 'd_throat': 100 # Standard
-        }
+    bleed_area = 3.0 * (click_val/max_clicks)
+    f_shock = [SuspensionPhysics.solve_damping(v, k_sc, geo_s, bleed_area, 0)[0] for v in vels]
+    lifts_s = [SuspensionPhysics.solve_damping(v, k_sc, geo_s, bleed_area, 0)[1] for v in vels]
+    cav_lim = SuspensionPhysics.calc_cavitation_limit(s_pres, s_rod, s_piston)
+    
+    with c_s_plot:
+        fig_s = go.Figure()
+        fig_s.add_trace(go.Scatter(x=vels, y=f_shock, mode='lines', line=dict(color='#E74C3C', width=3), name='Comp'))
+        fig_s.add_hline(y=cav_lim, line_dash="dash", line_color="red", annotation_text="CAVITAZIONE")
+        fig_s.update_layout(title="Shock Comp & Cavitation", height=300, template="plotly_dark", margin=dict(l=20, r=20, t=40, b=20))
+        st.plotly_chart(fig_s, use_container_width=True)
         
-        # Calcolo Area Bleed
-        # Semplificazione lineare: Area max 3mm2 -> 0 a chiusura
-        max_bleed_area = 3.0
-        clicker_area = max_bleed_area * (click_val / max_clicks)
-        fixed_area = np.pi * (fixed_bleed/2)**2
+    with c_s_vis:
+        st.markdown("**Visualizer**")
+        v_vis_s = st.slider("Speed (m/s)", 0.0, 6.0, 1.0, key="v_vis_s")
+        idx_s = (np.abs(vels - v_vis_s)).argmin()
+        lift_s_now = lifts_s[idx_s]
         
-        # Sweep Velocità
-        vels = np.linspace(0.01, 6.0, 50)
-        forces_c = []
-        lifts_c = []
-        
-        cav_limit = SuspensionPhysics.calc_cavitation_limit(s_pres, s_rod, s_piston)
-        
-        for v in vels:
-            f, l = SuspensionPhysics.solve_damping(v, k_stack_c, geo_shock, clicker_area, fixed_area)
-            forces_c.append(f)
-            lifts_c.append(l)
-            
-        # Plot
-        fig_damp = go.Figure()
-        
-        # Area Range (Min-Max Clicker)
-        # Calcoliamo veloce i limiti
-        f_hard = [SuspensionPhysics.solve_damping(v, k_stack_c, geo_shock, 0, fixed_area)[0] for v in vels]
-        f_soft = [SuspensionPhysics.solve_damping(v, k_stack_c, geo_shock, max_bleed_area, fixed_area)[0] for v in vels]
-        
-        fig_damp.add_trace(go.Scatter(
-            x=np.concatenate([vels, vels[::-1]]),
-            y=np.concatenate([f_hard, f_soft[::-1]]),
-            fill='toself', fillcolor='rgba(52, 152, 219, 0.2)',
-            line=dict(color='rgba(255,255,255,0)'),
-            name='Range Clicker'
-        ))
-        
-        # Curva Attuale
-        fig_damp.add_trace(go.Scatter(x=vels, y=forces_c, mode='lines', name='Setup Attuale', line=dict(color='#E74C3C', width=3)))
-        
-        # Linea Cavitazione
-        fig_damp.add_hline(y=cav_limit, line_dash="dash", line_color="red", annotation_text="LIMITE CAVITAZIONE", annotation_position="top right")
-
-        # Zone Helper
-        fig_damp.add_vrect(x0=0, x1=0.2, fillcolor="green", opacity=0.1, annotation_text="Grip", annotation_position="top left")
-        fig_damp.add_vrect(x0=1.5, x1=6.0, fillcolor="orange", opacity=0.1, annotation_text="Impact", annotation_position="top left")
-
-        fig_damp.update_layout(
-            title="Damping Force (Compressione)",
-            xaxis_title="Velocità Asta (m/s)",
-            yaxis_title="Forza (N)",
-            template="plotly_dark",
-            height=450
-        )
-        st.plotly_chart(fig_damp, use_container_width=True)
-        
-        # Check Cavitazione
-        max_force = max(forces_c)
-        if max_force > cav_limit:
-            st.markdown(f"<div class='warning-cav'>⚠️ ALLARME CAVITAZIONE! <br>Forza Picco ({max_force:.0f}N) > Limite ({cav_limit:.0f}N). <br>Aumenta Pressione Gas o Riduci Stack.</div>", unsafe_allow_html=True)
-
-    with col_vis:
-        st.markdown("#### 👁️ Visualizer")
-        st.caption("Muovi lo slider per vedere l'apertura")
-        
-        v_sim = st.slider("Velocità (m/s)", 0.0, 6.0, 1.0, 0.1)
-        
-        # Trova il lift a questa velocità
-        idx = (np.abs(vels - v_sim)).argmin()
-        current_lift = lifts_c[idx]
-        
-        st.metric("Apertura Lamelle", f"{current_lift:.2f} mm")
-        
-        # Disegno Lamella Semplificato
-        fig_shim = go.Figure()
-        
-        r_clamp = 6.0
-        r_piston = s_piston / 2
-        
-        # Lamella a riposo
-        fig_shim.add_trace(go.Scatter(x=[r_clamp, r_piston], y=[0, 0], mode='lines', line=dict(color='gray', width=2), name='Riposo'))
-        
-        # Lamella deformata (Parabolica approx)
-        x_shim = np.linspace(r_clamp, r_piston, 20)
-        # y = lift * ((x - clamp)/(piston-clamp))^2
-        y_shim = current_lift * ((x_shim - r_clamp) / (r_piston - r_clamp))**2
-        
-        fig_shim.add_trace(go.Scatter(x=x_shim, y=y_shim, mode='lines', line=dict(color='#E74C3C', width=4), name='Deformazione'))
-        
-        # Pistone
-        fig_shim.add_trace(go.Scatter(x=[r_piston, r_piston+5], y=[0, 0], mode='lines', line=dict(color='white', width=5), name='Pistone'))
-        
-        fig_shim.update_layout(
-            title=f"Sezione @ {v_sim} m/s",
-            yaxis_range=[-0.5, 3.0],
-            xaxis_title="Raggio (mm)",
-            yaxis_title="Lift (mm)",
-            template="plotly_dark",
-            height=300,
-            showlegend=False
-        )
-        st.plotly_chart(fig_shim, use_container_width=True)
+        fig_sim_s = go.Figure()
+        x_ss = np.linspace(6, s_piston/2, 20)
+        y_ss = lift_s_now * ((x_ss - 6)/(s_piston/2 - 6))**2
+        fig_sim_s.add_trace(go.Scatter(x=x_ss, y=y_ss, mode='lines', line=dict(color='#E74C3C', width=4)))
+        fig_sim_s.add_trace(go.Scatter(x=[6, s_piston/2], y=[0,0], mode='lines', line=dict(color='gray')))
+        fig_sim_s.update_layout(height=250, template="plotly_dark", yaxis_range=[-0.2, 2.5], showlegend=False, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_sim_s, use_container_width=True)
 
 # ==============================================================================
-# 3. TAB TELAIO (CHASSIS)
+# 3. TAB TELAIO
 # ==============================================================================
 with tab_chassis:
-    st.subheader("⚖️ Analisi Bilanciamento")
-    
-    col_t1, col_t2 = st.columns(2)
-    
-    with col_t1:
-        st.info("Funzione Target Weight")
-        target_w = st.number_input("Peso Target Pilota (kg)", 50, 120, 90)
-        
-        ratio = target_w / peso_pilota
-        st.write(f"Variazione Peso: **{((ratio-1)*100):.1f}%**")
-        st.write(f"Nuova Molla Consigliata: **{(f_rate * ratio):.2f} N/mm**")
-        st.write(f"Nuovo Damping Consigliato: **+{(np.sqrt(ratio)-1)*100:.1f}%** (Idraulica)")
+    st.subheader("Analisi Peso")
+    ratio = st.number_input("Peso Target", 50, 120, 90) / peso_pilota
+    st.info(f"Variazione Molla: {ratio:.2f}x | Variazione Idraulica: +{(np.sqrt(ratio)-1)*100:.1f}%")
 
-    with col_t2:
-        st.warning("🚧 Drop Test Simulator")
-        st.caption("Simulazione atterraggio da 1.5m")
-        st.progress(75, text="Utilizzo Corsa Previsto: 280mm / 300mm (OK)")
+# ==============================================================================
+# 4. TAB DATABASE CLIENTI (LA PARTE MANCANTE)
+# ==============================================================================
+with tab_db:
+    st.subheader("🗂️ Archivio Lavorazioni (Google Sheets)")
+    
+    # 1. Carica lista progetti
+    if st.button("🔄 Aggiorna Lista"):
+        st.cache_data.clear() # Forza refresh dati
+        
+    df_projects = SuspensionDB.load_projects()
+    
+    if df_projects.empty:
+        st.warning("Nessun progetto trovato o Database vuoto.")
+    else:
+        # Mostra tabella selezionabile
+        st.dataframe(
+            df_projects[["date", "model", "rider_weight", "notes"]],
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        st.markdown("---")
+        st.write("#### 📂 Azioni Progetto")
+        
+        # Selectbox per scegliere quale caricare
+        # Creiamo una label leggibile: "Data - Modello (Peso)"
+        options = df_projects.apply(lambda x: f"{x['date']} | {x['model']} ({x['rider_weight']}kg)", axis=1).tolist()
+        selected_option = st.selectbox("Seleziona Progetto da Caricare/Eliminare:", options)
+        
+        if selected_option:
+            # Trova l'ID corrispondente
+            idx = options.index(selected_option)
+            row = df_projects.iloc[idx]
+            
+            c_load, c_del = st.columns(2)
+            
+            with c_load:
+                if st.button("📂 CARICA NEL SIMULATORE", type="primary"):
+                    try:
+                        # Parsing JSON
+                        f_data = SuspensionDB.parse_config(row['fork_data'])
+                        s_data = SuspensionDB.parse_config(row['shock_data'])
+                        
+                        # Aggiornamento Session State (Stack)
+                        if 'bv' in f_data: st.session_state["fork_bv_df"] = pd.DataFrame(f_data['bv'])
+                        if 'mv' in f_data: st.session_state["fork_mv_df"] = pd.DataFrame(f_data['mv'])
+                        if 'comp' in s_data: st.session_state["shock_comp_df"] = pd.DataFrame(s_data['comp'])
+                        if 'reb' in s_data: st.session_state["shock_reb_df"] = pd.DataFrame(s_data['reb'])
+                        
+                        st.success(f"Caricato setup di: {row['model']}")
+                        st.balloons()
+                        
+                    except Exception as e:
+                        st.error(f"Errore nel caricamento dati: {e}")
+
+            with c_del:
+                if st.button("🗑️ ELIMINA PER SEMPRE"):
+                    SuspensionDB.delete_project(row['id'])
