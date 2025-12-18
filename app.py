@@ -13,7 +13,7 @@ except ImportError:
 
 # --- 1. CONFIGURAZIONE PAGINA & CSS ---
 st.set_page_config(
-    page_title="Suspension Lab V11", 
+    page_title="Suspension Lab", 
     page_icon="🔧", 
     layout="wide",
     initial_sidebar_state="expanded"
