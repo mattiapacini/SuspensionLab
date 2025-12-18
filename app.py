@@ -7,7 +7,7 @@ from physics import SuspensionPhysics
 from db_manager import SuspensionDB
 
 # --- 1. CONFIGURAZIONE PAGINA E STILE ---
-st.set_page_config(layout="wide", page_title="SuspensionLab PRO", page_icon="⚙️")
+st.set_page_config(layout="wide", page_title="SuspensionLab", page_icon="⚙️")
 
 st.markdown("""
 <style>
