@@ -1,11 +1,5 @@
 streamlit
 pandas
 numpy
-plotly
-openpyxl
-streamlit
-pandas
-numpy
-st-gsheets-connection
 matplotlib
 streamlit-gsheets
