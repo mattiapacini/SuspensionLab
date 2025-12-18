@@ -2,329 +2,283 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import json
 from physics import SuspensionPhysics
 from db_manager import SuspensionDB
 
-# --- 1. CONFIGURAZIONE PAGINA E STILE ---
-st.set_page_config(layout="wide", page_title="SuspensionLab", page_icon="⚙️")
-
+# --- CONFIGURAZIONE PAGINA ---
+st.set_page_config(layout="wide", page_title="SuspensionLab PRO", page_icon="⚙️")
 st.markdown("""
 <style>
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; background-color: #1E1E1E; border-radius: 5px; color: white; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { height: 45px; background-color: #1E1E1E; border-radius: 5px; color: white; }
     .stTabs [data-baseweb="tab"][aria-selected="true"] { background-color: #E67E22; color: white; }
-    .stButton button { width: 100%; border-radius: 5px; font-weight: bold; }
     div[data-testid="stToast"] { background-color: #2ecc71; color: white; }
-    hr { margin: 15px 0; border-color: #444; }
+    .block-container { padding-top: 1rem; }
+    hr { margin: 10px 0; border-color: #444; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. INIZIALIZZAZIONE STATO (Session State) ---
-def init_session_state():
-    """Inizializza le variabili se non esistono, per evitare crash al primo avvio."""
+# --- INIT STATE ---
+def init_state():
     defaults = {
-        "fork_bv_df": pd.DataFrame([{"qty": 1, "od": 20.0, "th": 0.15}, {"qty": 1, "od": 18.0, "th": 0.15}, {"qty": 1, "od": 12.0, "th": 0.20}]),
-        "fork_mv_df": pd.DataFrame([{"qty": 1, "od": 20.0, "th": 0.10}, {"qty": 1, "od": 12.0, "th": 0.20}]),
-        "shock_comp_df": pd.DataFrame([{"qty": 1, "od": 40.0, "th": 0.20}, {"qty": 1, "od": 30.0, "th": 0.15}, {"qty": 1, "od": 16.0, "th": 0.30}]),
-        "shock_reb_df": pd.DataFrame([{"qty": 1, "od": 36.0, "th": 0.15}, {"qty": 1, "od": 16.0, "th": 0.30}]),
-        "model": "KTM 450 SX-F",
-        "rider_weight": 80,
-        "notes": ""
+        "fork_bv_df": pd.DataFrame([{"qty": 1, "od": 20.0, "th": 0.15}, {"qty": 1, "od": 18.0, "th": 0.15}]),
+        "fork_mv_df": pd.DataFrame([{"qty": 1, "od": 20.0, "th": 0.10}]),
+        "shock_comp_df": pd.DataFrame([{"qty": 1, "od": 40.0, "th": 0.20}, {"qty": 1, "od": 30.0, "th": 0.15}]),
+        "shock_reb_df": pd.DataFrame([{"qty": 1, "od": 36.0, "th": 0.15}]),
+        "current_pilot_id": None,
+        "current_bike_id": None,
+        "rider_weight": 80
     }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
+    for k, v in defaults.items():
+        if k not in st.session_state: st.session_state[k] = v
 
-init_session_state()
+init_state()
 
-# --- 3. FUNZIONI HELPER ---
-def render_stack_editor(key_prefix):
-    """Crea la tabella editabile per le lamelle."""
+# --- HELPER FUNCS ---
+def render_stack(key):
     return st.data_editor(
-        st.session_state[f"{key_prefix}_df"],
+        st.session_state[f"{key}_df"],
         num_rows="dynamic",
         column_config={
-            "qty": st.column_config.NumberColumn("Q.tà", min_value=1, max_value=20, step=1, format="%d"),
-            "od": st.column_config.NumberColumn("Ø Est (mm)", min_value=6.0, max_value=60.0, step=0.5, format="%.1f"),
-            "th": st.column_config.NumberColumn("Spessore", min_value=0.05, max_value=1.0, step=0.01, format="%.2f")
+            "qty": st.column_config.NumberColumn("Q", min_value=1, max_value=20, step=1, format="%d"),
+            "od": st.column_config.NumberColumn("Ø", min_value=6.0, max_value=60.0, step=0.5, format="%.1f"),
+            "th": st.column_config.NumberColumn("Th", min_value=0.05, max_value=1.0, step=0.01, format="%.2f")
         },
         use_container_width=True,
-        key=f"editor_{key_prefix}"
+        key=f"ed_{key}"
     )
 
-def calc_k_simple(df):
-    """Calcolo rapido rigidezza stack per UI."""
+def calc_k(df):
     k = 0.0
     try:
-        for _, row in df.iterrows():
-            k += (row['th']**3) * row['qty'] * 1000
+        for _, r in df.iterrows(): k += (r['th']**3) * r['qty'] * 1000
     except: pass
     return max(k, 0.1)
 
 # ==============================================================================
-# SIDEBAR: GESTIONE COMPLETA DATABASE (Google Sheets)
+# SIDEBAR: GESTIONE SCUDERIA (Pilota -> Moto -> Sessione)
 # ==============================================================================
 with st.sidebar:
-    st.title("🗜️ SuspensionLab")
-    st.caption("Pro Version | GSheets Connected")
+    st.title("🏎️ Scuderia")
     
-    # --- SEZIONE CARICAMENTO ---
-    st.markdown("### 📂 Archivio Clienti")
+    # 1. SELEZIONE PILOTA
+    st.markdown("### 👤 Pilota")
+    df_piloti = SuspensionDB.get_piloti()
     
-    # Carica dati dal DB Manager
-    df_projects = SuspensionDB.load_projects()
+    opts_piloti = ["➕ NUOVO PILOTA"] + df_piloti.apply(lambda x: f"{x['Nome']} (ID:{x['ID']})", axis=1).tolist() if not df_piloti.empty else ["➕ NUOVO PILOTA"]
+    sel_pilota = st.selectbox("Seleziona:", opts_piloti, label_visibility="collapsed")
     
-    if not df_projects.empty:
-        # Crea lista leggibile
-        options = df_projects.apply(lambda x: f"{x['date']} | {x['model']} ({x['rider_weight']}kg)", axis=1).tolist()
-        selected_proj_str = st.selectbox("Seleziona Setup:", options, label_visibility="collapsed")
-        
-        c1, c2 = st.columns(2)
-        
-        # BOTTONE CARICA
-        if c1.button("📂 CARICA", use_container_width=True):
-            try:
-                idx = options.index(selected_proj_str)
-                row = df_projects.iloc[idx]
-                
-                # Parsing JSON
-                f_data = SuspensionDB.parse_config(row['fork_data'])
-                s_data = SuspensionDB.parse_config(row['shock_data'])
-                
-                # Aggiorna Session State
-                st.session_state["model"] = row['model']
-                st.session_state["rider_weight"] = row['rider_weight']
-                st.session_state["notes"] = row['notes']
-                
-                if 'bv' in f_data: st.session_state["fork_bv_df"] = pd.DataFrame(f_data['bv'])
-                if 'mv' in f_data: st.session_state["fork_mv_df"] = pd.DataFrame(f_data['mv'])
-                if 'comp' in s_data: st.session_state["shock_comp_df"] = pd.DataFrame(s_data['comp'])
-                if 'reb' in s_data: st.session_state["shock_reb_df"] = pd.DataFrame(s_data['reb'])
-                
-                st.toast(f"Caricato: {row['model']}", icon="✅")
+    if sel_pilota == "➕ NUOVO PILOTA":
+        with st.form("new_pilot"):
+            n_nome = st.text_input("Nome")
+            n_peso = st.number_input("Peso (kg)", 40, 120, 80)
+            n_liv = st.selectbox("Livello", ["Amatore", "Pro", "Expert"])
+            n_tel = st.text_input("Telefono")
+            n_note = st.text_area("Note")
+            if st.form_submit_button("Crea Pilota"):
+                SuspensionDB.add_pilota(n_nome, n_peso, n_liv, n_tel, n_note)
                 st.rerun()
-            except Exception as e:
-                st.error(f"Errore caricamento: {e}")
-
-        # BOTTONE ELIMINA
-        if c2.button("🗑️ ELIMINA", use_container_width=True):
-            idx = options.index(selected_proj_str)
-            proj_id = df_projects.iloc[idx]['id']
-            SuspensionDB.delete_project(proj_id)
-            
+        st.stop()
     else:
-        st.info("Database vuoto o non connesso.")
+        # Recupera dati Pilota
+        pid_idx = opts_piloti.index(sel_pilota) - 1
+        curr_pilot = df_piloti.iloc[pid_idx]
+        st.session_state["current_pilot_id"] = curr_pilot["ID"]
+        st.session_state["rider_weight"] = float(curr_pilot["Peso"]) if pd.notna(curr_pilot["Peso"]) else 80.0
+        st.caption(f"Peso: {st.session_state['rider_weight']}kg | Liv: {curr_pilot['Livello']}")
 
     st.markdown("---")
-    
-    # --- SEZIONE SALVATAGGIO ---
-    st.markdown("### 📝 Setup Corrente")
-    
-    # Input diretti su Session State
-    modello = st.text_input("Modello Moto", value=st.session_state["model"], key="input_model")
-    peso = st.number_input("Peso Pilota (kg)", value=st.session_state["rider_weight"], key="input_weight")
-    note = st.text_area("Note Lavorazione", value=st.session_state["notes"], height=100, key="input_notes")
-    
-    # BOTTONE SALVA
-    if st.button("💾 SALVA SU CLOUD", type="primary", use_container_width=True):
-        f_data_export = {
-            "bv": st.session_state["fork_bv_df"].to_dict('records'),
-            "mv": st.session_state["fork_mv_df"].to_dict('records')
-        }
-        s_data_export = {
-            "comp": st.session_state["shock_comp_df"].to_dict('records'),
-            "reb": st.session_state["shock_reb_df"].to_dict('records')
-        }
-        
-        with st.spinner("Salvataggio su Google Sheets in corso..."):
-            SuspensionDB.save_project(modello, peso, f_data_export, s_data_export, note)
 
-# ==============================================================================
-# MAIN PAGE: SIMULATORE COMPLETO
-# ==============================================================================
-
-tab_fork, tab_shock, tab_chassis = st.tabs(["🔹 FORCELLA (Front)", "🔸 MONO (Rear)", "⚖️ TELAIO"])
-
-# ------------------------------------------------------------------------------
-# TAB 1: FORCELLA
-# ------------------------------------------------------------------------------
-with tab_fork:
-    col_geom, col_hyd = st.columns([1, 1.5])
-    
-    # INPUT GEOMETRIA
-    with col_geom:
-        st.subheader("📏 Geometria & Molla")
-        f_type = st.selectbox("Sistema", ["AIR (Pneumatica)", "COIL (Molla)"])
+    # 2. SELEZIONE MOTO (GARAGE)
+    if st.session_state["current_pilot_id"]:
+        st.markdown("### 🏍️ Garage")
+        df_garage = SuspensionDB.get_garage(st.session_state["current_pilot_id"])
         
-        c_g1, c_g2 = st.columns(2)
-        f_travel = c_g1.number_input("Corsa (mm)", 100, 350, 300)
-        f_stelo = c_g2.selectbox("Ø Stelo", [35, 36, 48, 49, 50], index=2)
-        f_rod = st.number_input("Ø Asta Cartuccia (mm)", 8.0, 14.0, 12.0)
+        opts_moto = ["➕ AGGIUNGI MOTO"] 
+        if not df_garage.empty:
+            opts_moto += df_garage.apply(lambda x: f"{x['marca']} {x['modello']} ({x['anno']})", axis=1).tolist()
+            
+        sel_moto = st.selectbox("Seleziona Moto:", opts_moto, label_visibility="collapsed")
         
-        if f_type.startswith("AIR"):
-            f_psi = st.number_input("Pressione (PSI)", 40, 200, 145)
-            st.caption("Volume Token non attivo in questa versione")
+        if sel_moto == "➕ AGGIUNGI MOTO":
+            with st.form("new_moto"):
+                m_tipo = st.selectbox("Tipo", ["Cross", "Enduro", "Motard", "Stradale"])
+                c1, c2, c3 = st.columns(3)
+                m_marca = c1.text_input("Marca", "KTM")
+                m_mod = c2.text_input("Modello", "SX-F 450")
+                m_anno = c3.number_input("Anno", 2000, 2025, 2024)
+                m_forc = st.text_input("Forcella (Es. WP 48)", "WP XACT 48")
+                m_mono = st.text_input("Mono (Es. Showa)", "WP XACT")
+                if st.form_submit_button("Salva Moto"):
+                    SuspensionDB.add_mezzo(st.session_state["current_pilot_id"], m_tipo, m_marca, m_mod, m_anno, m_forc, m_mono)
+                    st.rerun()
+            st.stop()
         else:
-            f_rate = st.number_input("K Molla (N/mm)", 2.0, 15.0, 4.6)
+            mid_idx = opts_moto.index(sel_moto) - 1
+            curr_moto = df_garage.iloc[mid_idx]
+            st.session_state["current_bike_id"] = curr_moto["id_mezzo"]
+            
+            # 3. GESTIONE SESSIONI
+            st.markdown("---")
+            st.markdown("### 📋 Sessioni / Setup")
+            
+            # Carica Setup
+            df_sess = SuspensionDB.get_sessioni(st.session_state["current_bike_id"])
+            if not df_sess.empty:
+                opts_sess = df_sess.apply(lambda x: f"{x['data']} | {x['pista_luogo']}", axis=1).tolist()
+                sel_sess = st.selectbox("Storico:", opts_sess)
+                
+                if st.button("📂 CARICA SETUP", type="secondary", use_container_width=True):
+                    idx_s = opts_sess.index(sel_sess)
+                    row_s = df_sess.iloc[idx_s]
+                    
+                    # Parsing JSON tecnico
+                    tech = SuspensionDB.parse_json(row_s['dati_tecnici_json'])
+                    if 'f_bv' in tech: st.session_state["fork_bv_df"] = pd.DataFrame(tech['f_bv'])
+                    if 'f_mv' in tech: st.session_state["fork_mv_df"] = pd.DataFrame(tech['f_mv'])
+                    if 's_comp' in tech: st.session_state["shock_comp_df"] = pd.DataFrame(tech['s_comp'])
+                    if 's_reb' in tech: st.session_state["shock_reb_df"] = pd.DataFrame(tech['s_reb'])
+                    st.toast(f"Caricato: {row_s['pista_luogo']}")
+                    st.rerun()
+            else:
+                st.info("Nessuna sessione per questa moto.")
+            
+            st.markdown("#### 💾 Salva Lavoro Corrente")
+            with st.form("save_sess"):
+                s_pista = st.text_input("Pista / Luogo")
+                s_cond = st.selectbox("Condizione", ["Secco", "Fango", "Sabbia", "Duro", "Misto"])
+                s_feed = st.text_area("Feedback Pilota", height=80)
+                s_rat = st.slider("Rating", 1, 5, 3)
+                
+                if st.form_submit_button("SALVA SESSIONE"):
+                    # Prepara il pacchetto tecnico JSON
+                    tech_pack = {
+                        "f_bv": st.session_state["fork_bv_df"].to_dict('records'),
+                        "f_mv": st.session_state["fork_mv_df"].to_dict('records'),
+                        "s_comp": st.session_state["shock_comp_df"].to_dict('records'),
+                        "s_reb": st.session_state["shock_reb_df"].to_dict('records')
+                    }
+                    SuspensionDB.save_session(
+                        st.session_state["current_bike_id"],
+                        s_pista, s_cond, s_feed, s_rat, tech_pack
+                    )
+                    st.rerun()
 
-        st.markdown("---")
-        st.subheader("🥞 Stack Base Valve (Comp)")
-        st.session_state["fork_bv_df"] = render_stack_editor("fork_bv")
-        
-        st.subheader("🥞 Stack Mid Valve")
-        st.session_state["fork_mv_df"] = render_stack_editor("fork_mv")
+# ==============================================================================
+# MAIN: SIMULATORE
+# ==============================================================================
 
-    # SIMULATORE FORCELLA
-    with col_hyd:
-        st.subheader("🧪 Simulazione Idraulica")
+if not st.session_state.get("current_bike_id"):
+    st.info("👈 Per iniziare: Crea o Seleziona un Pilota, poi scegli una Moto dal menu laterale.")
+    st.stop()
+
+# TABS
+t_fork, t_shock, t_chassis = st.tabs(["🔹 FORCELLA", "🔸 MONO", "⚖️ TELAIO"])
+
+# --- FORCELLA ---
+with t_fork:
+    c1, c2 = st.columns([1, 1.5])
+    with c1:
+        st.subheader("Base Valve (BV)")
+        st.session_state["fork_bv_df"] = render_stack("fork_bv")
+        st.subheader("Mid Valve (MV)")
+        st.session_state["fork_mv_df"] = render_stack("fork_mv")
         
-        # Parametri Simulazione
-        c_p1, c_p2 = st.columns(2)
-        f_piston = c_p1.number_input("Ø Pistone Valvola", 18.0, 40.0, 24.0)
-        v_sim_f = c_p2.slider("Velocità Visualizer (m/s)", 0.0, 6.0, 2.0)
+    with c2:
+        st.subheader("Simulazione Idraulica")
+        v_sim = st.slider("Velocità Visualizer (m/s)", 0.0, 6.0, 2.0, key="vf")
         
-        # 1. Calcolo Fisica
-        k_bv = calc_k_simple(st.session_state["fork_bv_df"])
-        geo_f = {'d_piston': f_piston, 'd_rod': f_rod, 'type': 'compression', 'n_port': 4, 'w_port': 8.0, 'h_deck': 2.0, 'd_throat': 20.0}
+        # Fisica 
+        k_bv = calc_k(st.session_state["fork_bv_df"])
+        geo_f = {'d_piston': 24.0, 'd_rod': 12.0, 'type': 'compression', 'n_port': 4, 'w_port': 8.0, 'h_deck': 2.0, 'd_throat': 20.0}
         
         vels = np.linspace(0.01, 6.0, 50)
-        f_curve = []
-        lifts_f = []
-        
+        forces = []
+        lifts = []
         for v in vels:
-            # Simuliamo clicker aperto a 1.5mm2
-            force, lift = SuspensionPhysics.solve_damping(v, k_bv, geo_f, 1.5, 0)
-            f_curve.append(force)
-            lifts_f.append(lift)
-            
-        # 2. Grafico Forza
-        fig_f = go.Figure()
-        fig_f.add_trace(go.Scatter(x=vels, y=f_curve, mode='lines', line=dict(color='#3498db', width=3), name='Idraulica'))
-        fig_f.add_vrect(x0=0, x1=0.3, fillcolor="green", opacity=0.1, annotation_text="LSC")
-        fig_f.update_layout(title="Curva Smorzamento (Damping)", xaxis_title="m/s", yaxis_title="Forza (N)", height=280, template="plotly_dark", margin=dict(l=20,r=20,t=40,b=20))
-        st.plotly_chart(fig_f, use_container_width=True)
+             f, l = SuspensionPhysics.solve_damping(v, k_bv, geo_f, 1.5, 0)
+             forces.append(f)
+             lifts.append(l)
         
-        # 3. Visualizer Lamella
-        st.markdown("#### 👁️ Flessione Reale")
-        idx_f = (np.abs(vels - v_sim_f)).argmin()
-        lift_now_f = lifts_f[idx_f]
+        # Plot Curve
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=vels, y=forces, mode='lines', line=dict(color='#3498db', width=3)))
+        fig.update_layout(height=250, margin=dict(l=20,r=20,t=20,b=20), template="plotly_dark", title="Forza (N) vs Velocità (m/s)")
+        st.plotly_chart(fig, use_container_width=True)
         
-        fig_vis_f = go.Figure()
-        r_start = 6.0
-        r_end = f_piston / 2
-        
-        # Curva deformata
-        x_s = np.linspace(r_start, r_end, 20)
-        y_s = lift_now_f * ((x_s - r_start)/(r_end - r_start))**2
-        
-        fig_vis_f.add_trace(go.Scatter(x=x_s, y=y_s, mode='lines', line=dict(color='#3498db', width=4), name="Deformata"))
-        fig_vis_f.add_trace(go.Scatter(x=[r_start, r_end], y=[0,0], mode='lines', line=dict(color='gray', dash='dot'), name="Riposo"))
-        
-        # Pistone grafico
-        fig_vis_f.add_trace(go.Scatter(x=[r_end, r_end+2], y=[0,0], mode='lines', line=dict(color='white', width=5)))
+        # Visualizer
+        idx = (np.abs(vels - v_sim)).argmin()
+        lift = lifts[idx]
+        fig_vis = go.Figure()
+        x_s = np.linspace(6, 12, 20) 
+        y_s = lift * ((x_s-6)/(12-6))**2
+        fig_vis.add_trace(go.Scatter(x=x_s, y=y_s, line=dict(color='#3498db', width=4), name="Lamella"))
+        fig_vis.add_trace(go.Scatter(x=[6, 12], y=[0,0], line=dict(color='gray', dash='dot'), name="Battuta"))
+        fig_vis.update_layout(height=200, margin=dict(l=20,r=20,t=20,b=20), template="plotly_dark", yaxis_range=[-0.2, 2.0], title=f"Apertura Lamella: {lift:.2f}mm")
+        st.plotly_chart(fig_vis, use_container_width=True)
 
-        fig_vis_f.update_layout(
-            title=f"Apertura: {lift_now_f:.2f}mm @ {v_sim_f}m/s",
-            yaxis_range=[-0.2, 2.0], xaxis_title="Raggio (mm)",
-            height=250, template="plotly_dark", showlegend=False,
-            margin=dict(l=20,r=20,t=40,b=20)
-        )
-        st.plotly_chart(fig_vis_f, use_container_width=True)
-
-# ------------------------------------------------------------------------------
-# TAB 2: MONO
-# ------------------------------------------------------------------------------
-with tab_shock:
-    col_s_geom, col_s_hyd = st.columns([1, 1.5])
+# --- MONO ---
+with t_shock:
+    c1, c2 = st.columns([1, 1.5])
+    with c1:
+        st.subheader("Stack Compressione")
+        st.session_state["shock_comp_df"] = render_stack("shock_comp")
+        st.subheader("Stack Ritorno")
+        st.session_state["shock_reb_df"] = render_stack("shock_reb")
     
-    # INPUT MONO
-    with col_s_geom:
-        st.subheader("📏 Geometria Mono")
-        s_piston = st.number_input("Ø Pistone (mm)", 36, 50, 50)
-        s_rod = st.number_input("Ø Asta (mm)", 14, 18, 16)
-        s_pres = st.number_input("Pressione Gas (Bar)", 5.0, 20.0, 10.0)
+    with c2:
+        st.subheader("Simulazione & Cavitazione")
+        v_sim_s = st.slider("Velocità Visualizer (m/s)", 0.0, 6.0, 2.0, key="vs")
         
-        st.markdown("---")
-        st.subheader("🥞 Stack Compressione")
-        st.session_state["shock_comp_df"] = render_stack_editor("shock_comp")
+        k_sc = calc_k(st.session_state["shock_comp_df"])
+        geo_s = {'d_piston': 50.0, 'd_rod': 16.0, 'type': 'compression', 'n_port': 4, 'w_port': 12.0, 'h_deck': 3.0, 'd_throat': 100}
         
-        st.subheader("🥞 Stack Ritorno")
-        st.session_state["shock_reb_df"] = render_stack_editor("shock_reb")
-
-    # SIMULATORE MONO
-    with col_s_hyd:
-        st.subheader("🧪 Simulazione & Cavitazione")
-        
-        c_k1, c_k2, c_k3 = st.columns(3)
-        max_clicks = c_k1.number_input("Click Max", 10, 40, 24)
-        click_pos = c_k2.slider("Clicker (Aperti)", 0, int(max_clicks), 12)
-        v_sim_s = c_k3.slider("Velocità Vis", 0.0, 6.0, 2.0)
-        
-        # 1. Calcolo Fisica
-        k_sc = calc_k_simple(st.session_state["shock_comp_df"])
-        geo_s = {'d_piston': s_piston, 'd_rod': s_rod, 'type': 'compression', 'n_port': 4, 'w_port': 12, 'h_deck': 3.0, 'd_throat': 100}
-        
-        bleed_area = 3.0 * (click_pos / max_clicks)
-        cav_limit = SuspensionPhysics.calc_cavitation_limit(s_pres, s_rod, s_piston)
-        
-        s_curve = []
+        forces_s = []
         lifts_s = []
-        
         for v in vels:
-            f, l = SuspensionPhysics.solve_damping(v, k_sc, geo_s, bleed_area, 0)
-            s_curve.append(f)
+            f, l = SuspensionPhysics.solve_damping(v, k_sc, geo_s, 1.0, 0)
+            forces_s.append(f)
             lifts_s.append(l)
-            
-        # 2. Grafico Forza + Cavitazione
-        fig_s = go.Figure()
-        fig_s.add_trace(go.Scatter(x=vels, y=s_curve, mode='lines', line=dict(color='#e74c3c', width=3), name='Compressione'))
-        fig_s.add_hline(y=cav_limit, line_dash="dash", line_color="red", annotation_text="CAVITAZIONE")
         
-        # Check allarme
-        if max(s_curve) > cav_limit:
-            st.error(f"⚠️ ALLARME: La forza ({max(s_curve):.0f}N) supera il limite di cavitazione ({cav_limit:.0f}N)!")
-            
-        fig_s.update_layout(title="Curva Compressione", xaxis_title="m/s", yaxis_title="Forza (N)", height=280, template="plotly_dark", margin=dict(l=20,r=20,t=40,b=20))
+        fig_s = go.Figure()
+        fig_s.add_trace(go.Scatter(x=vels, y=forces_s, line=dict(color='#e74c3c', width=3)))
+        # Cavitation dummy limit
+        fig_s.add_hline(y=1800, line_dash="dash", line_color="red", annotation_text="Limite Cavitazione (Stimato)")
+        fig_s.update_layout(height=250, margin=dict(l=20,r=20,t=20,b=20), template="plotly_dark", title="Curva Compressione Mono")
         st.plotly_chart(fig_s, use_container_width=True)
         
-        # 3. Visualizer Lamella Mono
-        st.markdown("#### 👁️ Flessione Mono")
         idx_s = (np.abs(vels - v_sim_s)).argmin()
-        lift_now_s = lifts_s[idx_s]
-        
+        lift_s = lifts_s[idx_s]
         fig_vis_s = go.Figure()
-        r_end_s = s_piston / 2
-        
-        x_ss = np.linspace(6.0, r_end_s, 20)
-        y_ss = lift_now_s * ((x_ss - 6.0)/(r_end_s - 6.0))**2
-        
-        fig_vis_s.add_trace(go.Scatter(x=x_ss, y=y_ss, mode='lines', line=dict(color='#e74c3c', width=4)))
-        fig_vis_s.add_trace(go.Scatter(x=[6.0, r_end_s], y=[0,0], mode='lines', line=dict(color='gray', dash='dot')))
-        fig_vis_s.add_trace(go.Scatter(x=[r_end_s, r_end_s+3], y=[0,0], mode='lines', line=dict(color='white', width=5)))
-        
-        fig_vis_s.update_layout(
-            title=f"Apertura: {lift_now_s:.2f}mm @ {v_sim_s}m/s",
-            yaxis_range=[-0.2, 2.5], xaxis_title="Raggio (mm)",
-            height=250, template="plotly_dark", showlegend=False,
-            margin=dict(l=20,r=20,t=40,b=20)
-        )
+        x_ss = np.linspace(6, 25, 20)
+        y_ss = lift_s * ((x_ss-6)/(25-6))**2
+        fig_vis_s.add_trace(go.Scatter(x=x_ss, y=y_ss, line=dict(color='#e74c3c', width=4)))
+        fig_vis_s.add_trace(go.Scatter(x=[6, 25], y=[0,0], line=dict(color='gray', dash='dot')))
+        fig_vis_s.update_layout(height=200, margin=dict(l=20,r=20,t=20,b=20), template="plotly_dark", yaxis_range=[-0.2, 2.5], title=f"Apertura Mono: {lift_s:.2f}mm")
         st.plotly_chart(fig_vis_s, use_container_width=True)
 
-# ------------------------------------------------------------------------------
-# TAB 3: TELAIO
-# ------------------------------------------------------------------------------
-with tab_chassis:
-    st.subheader("⚖️ Analisi Bilanciamento")
+# --- TELAIO ---
+with t_chassis:
+    st.subheader("⚖️ Calcolatore Bilanciamento")
     
-    target_w = st.number_input("Peso Target Pilota (kg)", 50, 120, 90)
-    current_w = st.session_state["rider_weight"]
+    col_w1, col_w2 = st.columns(2)
+    rider_w_actual = st.session_state.get("rider_weight", 80.0)
     
-    ratio = target_w / current_w if current_w > 0 else 1.0
+    with col_w1:
+        st.metric("Peso Pilota Attuale", f"{rider_w_actual} kg")
+    with col_w2:
+        target_w = st.number_input("Peso Target (Standard)", 50, 120, 75)
+        
+    ratio = rider_w_actual / target_w
     
+    st.markdown("#### Suggerimenti Setup")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Variazione Peso", f"{((ratio-1)*100):.1f}%")
-    c2.metric("Molla Richiesta", f"{ratio:.2f}x")
-    c3.metric("Idraulica (+/-)", f"{((np.sqrt(ratio)-1)*100):.1f}%")
     
-    st.info("I calcoli si basano sulla variazione proporzionale di energia cinetica e frequenza naturale.")
+    spring_change = (ratio - 1) * 100
+    hyd_change = (np.sqrt(ratio) - 1) * 100
+    
+    c1.info(f"Molla: **{spring_change:+.1f}%** Rigidità")
+    c2.warning(f"Idraulica: **{hyd_change:+.1f}%** Frenatura")
+    c3.success("Sag consigliato: **35mm** Statico / **105mm** Rider")
+    
+    st.caption("Nota: I calcoli si basano sulla variazione di frequenza naturale del sistema massa-molla.")
